@@ -1,0 +1,173 @@
+{{- $existing := lookup "apps/v1" "StatefulSet" .Release.Namespace (printf "%s-node" .Release.Name) -}}
+{{- if and .Release.IsUpgrade $existing (ne ($existing.spec.podManagementPolicy | default "OrderedReady") "Parallel") -}}
+{{- $name := printf "%s-parallel-migration" .Release.Name -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: '-30'
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: '-20'
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    resourceNames: [{{ .Release.Name }}-node]
+    verbs: [get, list, watch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: '-10'
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.migration.ciliumNetworkPolicy }}
+---
+# Optional Cilium exception for the short-lived upgrade Job.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: '-5'
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis-parallel-migration
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  egress:
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: '443'
+              protocol: TCP
+            - port: '6443'
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace }}
+            k8s:app.kubernetes.io/name: redis
+            k8s:app.kubernetes.io/instance: {{ .Release.Name }}
+      toPorts:
+        - ports:
+            - port: '6379'
+              protocol: TCP
+            - port: '26379'
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: '53'
+              protocol: UDP
+            - port: '53'
+              protocol: TCP
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: '0'
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 180
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis-parallel-migration
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: prepare-hostnames
+          image: {{ .Values.image | quote }}
+          command: [/bin/bash, -ec]
+          args:
+            - |
+{{ .Files.Get "files/prepare-hostnames.sh" | indent 14 }}
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          env: {{ include "redis.env" . | nindent 12 }}
+          securityContext: {{ include "redis.security" . | nindent 12 }}
+          volumeMounts:
+            - name: credentials
+              mountPath: /secrets
+              readOnly: true
+      containers:
+        - name: orphan-controller
+          image: {{ .Values.migration.kubectlImage | quote }}
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          command: [kubectl]
+          args:
+            - --namespace={{ .Release.Namespace }}
+            - --cache-dir=/tmp/kube-cache
+            - delete
+            - statefulset
+            - {{ .Release.Name }}-node
+            - --cascade=orphan
+            - --ignore-not-found=true
+            - --wait=true
+          securityContext: {{ include "redis.security" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: credentials
+          secret:
+            secretName: {{ .Values.auth.existingSecret }}
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}
+{{- end }}

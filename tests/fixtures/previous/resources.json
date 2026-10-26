@@ -1,0 +1,708 @@
+[
+  {
+    "apiVersion": "networking.k8s.io/v1",
+    "kind": "NetworkPolicy",
+    "metadata": {
+      "name": "cache",
+      "namespace": "database"
+    },
+    "spec": {
+      "podSelector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "redis",
+          "app.kubernetes.io/instance": "cache"
+        }
+      },
+      "policyTypes": [
+        "Ingress",
+        "Egress"
+      ],
+      "egress": [
+        {}
+      ],
+      "ingress": [
+        {
+          "ports": [
+            {
+              "port": 6379
+            },
+            {
+              "port": 26379
+            }
+          ]
+        },
+        {
+          "ports": [
+            {
+              "port": 9121
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "apiVersion": "policy/v1",
+    "kind": "PodDisruptionBudget",
+    "metadata": {
+      "name": "cache-node",
+      "namespace": "database"
+    },
+    "spec": {
+      "maxUnavailable": 1,
+      "selector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "redis",
+          "app.kubernetes.io/instance": "cache",
+          "app.kubernetes.io/component": "node"
+        }
+      }
+    }
+  },
+  {
+    "apiVersion": "v1",
+    "kind": "ServiceAccount",
+    "metadata": {
+      "name": "cache",
+      "namespace": "database"
+    },
+    "automountServiceAccountToken": false
+  },
+  {
+    "apiVersion": "v1",
+    "kind": "Service",
+    "metadata": {
+      "name": "cache",
+      "namespace": "database"
+    },
+    "spec": {
+      "type": "ClusterIP",
+      "selector": {
+        "app.kubernetes.io/name": "redis",
+        "app.kubernetes.io/instance": "cache",
+        "app.kubernetes.io/component": "node"
+      },
+      "ports": [
+        {
+          "name": "tcp-redis",
+          "port": 6379,
+          "targetPort": 6379,
+          "protocol": "TCP"
+        },
+        {
+          "name": "tcp-sentinel",
+          "port": 26379,
+          "targetPort": 26379,
+          "protocol": "TCP"
+        }
+      ]
+    }
+  },
+  {
+    "apiVersion": "v1",
+    "kind": "Service",
+    "metadata": {
+      "name": "cache-headless",
+      "namespace": "database"
+    },
+    "spec": {
+      "type": "ClusterIP",
+      "clusterIP": "None",
+      "publishNotReadyAddresses": true,
+      "selector": {
+        "app.kubernetes.io/name": "redis",
+        "app.kubernetes.io/instance": "cache"
+      },
+      "ports": [
+        {
+          "name": "tcp-redis",
+          "port": 6379,
+          "targetPort": "redis",
+          "protocol": "TCP"
+        },
+        {
+          "name": "tcp-sentinel",
+          "port": 26379,
+          "targetPort": "redis-sentinel",
+          "protocol": "TCP"
+        }
+      ]
+    }
+  },
+  {
+    "apiVersion": "v1",
+    "kind": "Service",
+    "metadata": {
+      "name": "cache-metrics",
+      "namespace": "database"
+    },
+    "spec": {
+      "type": "ClusterIP",
+      "selector": {
+        "app.kubernetes.io/name": "redis",
+        "app.kubernetes.io/instance": "cache"
+      },
+      "ports": [
+        {
+          "name": "http-metrics",
+          "port": 9121,
+          "targetPort": "metrics",
+          "protocol": "TCP"
+        }
+      ]
+    }
+  },
+  {
+    "apiVersion": "apps/v1",
+    "kind": "StatefulSet",
+    "metadata": {
+      "name": "cache-node",
+      "namespace": "database"
+    },
+    "spec": {
+      "replicas": 3,
+      "serviceName": "cache-headless",
+      "podManagementPolicy": "OrderedReady",
+      "updateStrategy": {
+        "type": "RollingUpdate"
+      },
+      "minReadySeconds": 15,
+      "selector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "redis",
+          "app.kubernetes.io/instance": "cache",
+          "app.kubernetes.io/component": "node"
+        }
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/name": "redis",
+            "app.kubernetes.io/instance": "cache",
+            "app.kubernetes.io/component": "node"
+          },
+          "annotations": {
+            "checksum/configuration": "0dd8afc01f6a8c046c5fc9816774cf9493989246cfd5769732eb8040e82073e8"
+          }
+        },
+        "spec": {
+          "serviceAccountName": "cache",
+          "automountServiceAccountToken": false,
+          "terminationGracePeriodSeconds": 90,
+          "securityContext": {
+            "fsGroup": 1001,
+            "fsGroupChangePolicy": "Always"
+          },
+          "affinity": {
+            "podAntiAffinity": {
+              "requiredDuringSchedulingIgnoredDuringExecution": [
+                {
+                  "labelSelector": {
+                    "matchLabels": {
+                      "app.kubernetes.io/name": "redis",
+                      "app.kubernetes.io/instance": "cache",
+                      "app.kubernetes.io/component": "node"
+                    }
+                  },
+                  "topologyKey": "kubernetes.io/hostname"
+                }
+              ]
+            }
+          },
+          "containers": [
+            {
+              "name": "redis",
+              "image": "docker.io/library/redis:8.8.3-trixie@sha256:b2ba68d56e7e7ea88b64f4eaf307bceafc012079f227ed795785f4283a592dc0",
+              "imagePullPolicy": "IfNotPresent",
+              "command": [
+                "/bin/bash",
+                "/shutdown/startup.sh",
+                "redis"
+              ],
+              "env": [
+                {
+                  "name": "REDIS_PORT",
+                  "value": "6379"
+                },
+                {
+                  "name": "REDIS_SENTINEL_PORT",
+                  "value": "26379"
+                },
+                {
+                  "name": "POD_NAME",
+                  "valueFrom": {
+                    "fieldRef": {
+                      "fieldPath": "metadata.name"
+                    }
+                  }
+                },
+                {
+                  "name": "POD_IP",
+                  "valueFrom": {
+                    "fieldRef": {
+                      "fieldPath": "status.podIP"
+                    }
+                  }
+                },
+                {
+                  "name": "REDIS_PASSWORD_FILE",
+                  "value": "/secrets/redis-password"
+                },
+                {
+                  "name": "REDIS_SHUTDOWN_MASTER_SET",
+                  "value": "redis"
+                },
+                {
+                  "name": "REDIS_SHUTDOWN_REPLICAS",
+                  "value": "3"
+                },
+                {
+                  "name": "REDIS_SENTINEL_QUORUM",
+                  "value": "2"
+                },
+                {
+                  "name": "REDIS_NODE_PREFIX",
+                  "value": "cache-node"
+                },
+                {
+                  "name": "REDIS_HEADLESS",
+                  "value": "cache-headless.database.svc.cluster.local"
+                },
+                {
+                  "name": "REDIS_BOOTSTRAP",
+                  "value": "no"
+                },
+                {
+                  "name": "REDIS_MIGRATE_SENTINEL_IDENTITY",
+                  "value": "no"
+                }
+              ],
+              "ports": [
+                {
+                  "name": "redis",
+                  "containerPort": 6379,
+                  "protocol": "TCP"
+                }
+              ],
+              "resources": {
+                "limits": {
+                  "cpu": "150m",
+                  "memory": "512Mi"
+                },
+                "requests": {
+                  "cpu": "100m",
+                  "memory": "128Mi"
+                }
+              },
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true,
+                "runAsUser": 1001,
+                "runAsGroup": 1001,
+                "runAsNonRoot": true,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "volumeMounts": [
+                {
+                  "name": "scripts",
+                  "mountPath": "/shutdown",
+                  "readOnly": true
+                },
+                {
+                  "name": "configuration",
+                  "mountPath": "/config",
+                  "readOnly": true
+                },
+                {
+                  "name": "credentials",
+                  "mountPath": "/secrets",
+                  "readOnly": true
+                },
+                {
+                  "name": "runtime",
+                  "mountPath": "/run/redis-config"
+                },
+                {
+                  "name": "shutdown-state",
+                  "mountPath": "/run/redis-shutdown"
+                },
+                {
+                  "name": "tmp",
+                  "mountPath": "/tmp"
+                },
+                {
+                  "name": "redis-data",
+                  "mountPath": "/data"
+                }
+              ],
+              "startupProbe": {
+                "exec": {
+                  "command": [
+                    "/bin/bash",
+                    "/shutdown/startup.sh",
+                    "redis-ping"
+                  ]
+                },
+                "periodSeconds": 5,
+                "timeoutSeconds": 3,
+                "failureThreshold": 60
+              },
+              "readinessProbe": {
+                "exec": {
+                  "command": [
+                    "/bin/bash",
+                    "-ec",
+                    "timeout 5 /bin/bash /shutdown/shutdown.sh ready"
+                  ]
+                },
+                "periodSeconds": 5,
+                "timeoutSeconds": 6,
+                "failureThreshold": 1
+              },
+              "livenessProbe": {
+                "exec": {
+                  "command": [
+                    "/bin/bash",
+                    "/shutdown/startup.sh",
+                    "redis-ping"
+                  ]
+                },
+                "periodSeconds": 10,
+                "timeoutSeconds": 3,
+                "failureThreshold": 6
+              },
+              "lifecycle": {
+                "postStart": {
+                  "exec": {
+                    "command": [
+                      "/bin/bash",
+                      "/shutdown/shutdown.sh",
+                      "started"
+                    ]
+                  }
+                },
+                "preStop": {
+                  "exec": {
+                    "command": [
+                      "/bin/bash",
+                      "-ec",
+                      "timeout 70 /bin/bash /shutdown/shutdown.sh redis"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "name": "sentinel",
+              "image": "docker.io/library/redis:8.8.3-trixie@sha256:b2ba68d56e7e7ea88b64f4eaf307bceafc012079f227ed795785f4283a592dc0",
+              "imagePullPolicy": "IfNotPresent",
+              "command": [
+                "/bin/bash",
+                "/shutdown/startup.sh",
+                "sentinel"
+              ],
+              "env": [
+                {
+                  "name": "REDIS_PORT",
+                  "value": "6379"
+                },
+                {
+                  "name": "REDIS_SENTINEL_PORT",
+                  "value": "26379"
+                },
+                {
+                  "name": "POD_NAME",
+                  "valueFrom": {
+                    "fieldRef": {
+                      "fieldPath": "metadata.name"
+                    }
+                  }
+                },
+                {
+                  "name": "POD_IP",
+                  "valueFrom": {
+                    "fieldRef": {
+                      "fieldPath": "status.podIP"
+                    }
+                  }
+                },
+                {
+                  "name": "REDIS_PASSWORD_FILE",
+                  "value": "/secrets/redis-password"
+                },
+                {
+                  "name": "REDIS_SHUTDOWN_MASTER_SET",
+                  "value": "redis"
+                },
+                {
+                  "name": "REDIS_SHUTDOWN_REPLICAS",
+                  "value": "3"
+                },
+                {
+                  "name": "REDIS_SENTINEL_QUORUM",
+                  "value": "2"
+                },
+                {
+                  "name": "REDIS_NODE_PREFIX",
+                  "value": "cache-node"
+                },
+                {
+                  "name": "REDIS_HEADLESS",
+                  "value": "cache-headless.database.svc.cluster.local"
+                },
+                {
+                  "name": "REDIS_BOOTSTRAP",
+                  "value": "no"
+                },
+                {
+                  "name": "REDIS_MIGRATE_SENTINEL_IDENTITY",
+                  "value": "no"
+                }
+              ],
+              "ports": [
+                {
+                  "name": "redis-sentinel",
+                  "containerPort": 26379,
+                  "protocol": "TCP"
+                }
+              ],
+              "resources": {
+                "limits": {
+                  "cpu": "150m",
+                  "ephemeral-storage": "2Gi",
+                  "memory": "192Mi"
+                },
+                "requests": {
+                  "cpu": "100m",
+                  "ephemeral-storage": "50Mi",
+                  "memory": "128Mi"
+                }
+              },
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true,
+                "runAsUser": 1001,
+                "runAsGroup": 1001,
+                "runAsNonRoot": true,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "volumeMounts": [
+                {
+                  "name": "scripts",
+                  "mountPath": "/shutdown",
+                  "readOnly": true
+                },
+                {
+                  "name": "configuration",
+                  "mountPath": "/config",
+                  "readOnly": true
+                },
+                {
+                  "name": "credentials",
+                  "mountPath": "/secrets",
+                  "readOnly": true
+                },
+                {
+                  "name": "runtime",
+                  "mountPath": "/run/redis-config"
+                },
+                {
+                  "name": "shutdown-state",
+                  "mountPath": "/run/redis-shutdown"
+                },
+                {
+                  "name": "tmp",
+                  "mountPath": "/tmp"
+                },
+                {
+                  "name": "redis-data",
+                  "mountPath": "/data"
+                }
+              ],
+              "startupProbe": {
+                "exec": {
+                  "command": [
+                    "/bin/bash",
+                    "/shutdown/startup.sh",
+                    "sentinel-ping"
+                  ]
+                },
+                "periodSeconds": 5,
+                "timeoutSeconds": 3,
+                "failureThreshold": 60
+              },
+              "readinessProbe": {
+                "exec": {
+                  "command": [
+                    "/bin/bash",
+                    "/shutdown/startup.sh",
+                    "sentinel-ping"
+                  ]
+                },
+                "periodSeconds": 5,
+                "timeoutSeconds": 6,
+                "failureThreshold": 1
+              },
+              "livenessProbe": {
+                "exec": {
+                  "command": [
+                    "/bin/bash",
+                    "/shutdown/startup.sh",
+                    "sentinel-ping"
+                  ]
+                },
+                "periodSeconds": 10,
+                "timeoutSeconds": 3,
+                "failureThreshold": 6
+              },
+              "lifecycle": {
+                "preStop": {
+                  "exec": {
+                    "command": [
+                      "/bin/bash",
+                      "/shutdown/shutdown.sh",
+                      "sentinel"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "name": "metrics",
+              "image": "docker.io/oliver006/redis_exporter:v1.89.0-alpine@sha256:d4e0a0ad55fa4f968eea4519b518b16dac887debd06c790a6be2f60940538d82",
+              "imagePullPolicy": "IfNotPresent",
+              "args": [
+                "--redis.addr=redis://127.0.0.1:6379"
+              ],
+              "env": [
+                {
+                  "name": "REDIS_PASSWORD",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "name": "redis",
+                      "key": "redis-password"
+                    }
+                  }
+                }
+              ],
+              "ports": [
+                {
+                  "name": "metrics",
+                  "containerPort": 9121,
+                  "protocol": "TCP"
+                }
+              ],
+              "resources": {
+                "limits": {
+                  "cpu": "150m",
+                  "ephemeral-storage": "2Gi",
+                  "memory": "192Mi"
+                },
+                "requests": {
+                  "cpu": "100m",
+                  "ephemeral-storage": "50Mi",
+                  "memory": "128Mi"
+                }
+              },
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true,
+                "runAsUser": 1001,
+                "runAsGroup": 1001,
+                "runAsNonRoot": true,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "readinessProbe": {
+                "httpGet": {
+                  "path": "/",
+                  "port": "metrics"
+                },
+                "periodSeconds": 5,
+                "timeoutSeconds": 2
+              }
+            }
+          ],
+          "volumes": [
+            {
+              "name": "scripts",
+              "configMap": {
+                "name": "previous-lifecycle"
+              }
+            },
+            {
+              "name": "configuration",
+              "configMap": {
+                "name": "cache-runtime-config"
+              }
+            },
+            {
+              "name": "credentials",
+              "secret": {
+                "secretName": "redis",
+                "defaultMode": 440
+              }
+            },
+            {
+              "name": "runtime",
+              "emptyDir": {}
+            },
+            {
+              "name": "shutdown-state",
+              "emptyDir": {}
+            },
+            {
+              "name": "tmp",
+              "emptyDir": {}
+            }
+          ]
+        }
+      },
+      "volumeClaimTemplates": [
+        {
+          "apiVersion": "v1",
+          "kind": "PersistentVolumeClaim",
+          "metadata": {
+            "name": "redis-data",
+            "labels": {
+              "app.kubernetes.io/name": "redis",
+              "app.kubernetes.io/instance": "cache",
+              "app.kubernetes.io/component": "node"
+            }
+          },
+          "spec": {
+            "accessModes": [
+              "ReadWriteOnce"
+            ],
+            "resources": {
+              "requests": {
+                "storage": "1Gi"
+              }
+            },
+            "storageClassName": "fixture-storage"
+          }
+        }
+      ]
+    }
+  }
+]

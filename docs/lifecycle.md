@@ -1,0 +1,80 @@
+# Lifecycle contract
+
+The owning implementations are `charts/redis/files/startup.sh`, `shutdown.sh`,
+and `prepare-hostnames.sh`. The chart packages those files in a retained,
+content-addressed ConfigMap; no external script ConfigMap is required.
+
+## Startup and authority
+
+Sentinel starts from its persisted monitor, identity, and election epochs. It
+refreshes credentials and transport settings, enables hostname resolution and
+announcement, and seeds the fixed member inventory for normal INFO/HELLO
+discovery. Redis 8.8.3 accepts temporarily unresolved member names. A missing
+persisted Sentinel configuration requires a quorum-verified live primary, except
+for explicit initialization; replacement voters must not grow the electorate.
+
+Startup reads all reachable Sentinel MASTER replies. A replica upstream is
+accepted only when quorum agrees at the newest observed configuration epoch
+and that endpoint directly reports primary role. This discovery never promotes
+a data node. Without a verified live primary, a retained node starts read-only
+against an unreachable loopback endpoint, allowing native Sentinel to elect an
+eligible retained replica. Even a returning former primary starts read-only.
+No ordinal preference or cached address can create a writable retained node.
+
+Only deliberately enabled bootstrap on a truly empty ordinal zero may create
+the initial primary. Empty returning nodes have a persisted seed marker and
+replica priority zero. The actual readiness probe restores the configured
+priority only after a working replication link and completed synchronization.
+That eligibility fence survives container restarts.
+
+## Persistence and liveness
+
+Redis loads behind an authenticated private UNIX socket with public TCP disabled
+and its replication fence already configured. Native Redis owns supported
+truncated AOF-tail recovery. After successful load, the supervisor opens TCP
+6379 and forwards termination signals to the server.
+
+Confirmed invalid persistence, including an orphaned AOF directory without its
+manifest, waits for a repair source. Repair requires a quorum-verified remote
+primary plus a second remote member with matching replication history, completed
+sync, and an offset at least as recent as the captured primary offset. Only
+then may local AOF/RDB files move into the single bounded quarantine and a
+priority-zero node reseed. Sentinel metadata and credential files are preserved.
+Other startup errors exit with data intact. Changed local persistence files
+cause a waiting supervisor to retry native loading.
+
+Startup/liveness probes accept a fresh supervisor heartbeat during loading or
+dependency waits; otherwise they require authenticated PING. Readiness always
+checks the real listener and replica link/sync state. Discovery calls are bounded.
+Waiting for quorum does not repeatedly reload valid data or declare an unready
+Redis member ready.
+
+## Planned termination
+
+The Redis hook pauses writes and captures the replication ID and offset. Both
+replicas must be linked, synchronized, and at that boundary before requesting
+Sentinel failover. It verifies the new primary's actual role and retained
+history, demotes the old primary, disconnects normal/PubSub clients, and unpauses
+only the confirmed replica. An uncertain primary is never resumed.
+
+The Redis hook has a 70-second bound; Sentinel waits on its completion barrier
+for at most 75 seconds. Pod termination grace is 90 seconds and the write pause
+lasts 120 seconds. Kubernetes can terminate after a failed hook: preStop cannot
+veto deletion. Parallel creation does not change RollingUpdate's descending,
+one-at-a-time replacement, 15-second sustained readiness gate, or PDB.
+
+## First upgrade
+
+The pre-upgrade hook runs only when an existing StatefulSet uses OrderedReady.
+It verifies one primary, two synchronized replicas, and usable Sentinel quorum.
+All voters enable hostname support before announcements change. Each replica
+reconnects separately so its replication handshake advertises its new name.
+Discovery is refreshed one voter at a time, preserving identity and epochs.
+That healthy migration step is separate from ordinary recovery, which performs
+no Sentinel reset.
+
+Named namespace-scoped RBAC permits orphaning only the existing StatefulSet
+controller. Pods, selectors, Services, PVCs, and credentials remain intact for
+Helm adoption under Parallel policy. An optional Cilium policy admits only the
+Job's API, Redis, and DNS traffic. Subsequent upgrades and fresh installations
+do not render this hook.

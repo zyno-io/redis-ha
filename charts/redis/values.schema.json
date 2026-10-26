@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "image",
+    "auth",
+    "replica",
+    "sentinel",
+    "metrics"
+  ],
+  "properties": {
+    "migration": {
+      "type": "object",
+      "properties": {
+        "preserveLegacySentinelIdentity": {
+          "type": "boolean"
+        },
+        "kubectlImage": {
+          "type": "string",
+          "pattern": "^registry\\.k8s\\.io/kubectl:v[0-9]+\\.[0-9]+\\.[0-9]+@sha256:[a-f0-9]{64}$"
+        },
+        "ciliumNetworkPolicy": {
+          "type": "boolean"
+        }
+      }
+    },
+    "image": {
+      "type": "string",
+      "pattern": "^docker\\.io/library/redis:[0-9]+\\.[0-9]+\\.[0-9]+-trixie@sha256:[a-f0-9]{64}$"
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {
+          "type": "string",
+          "minLength": 1
+        },
+        "existingSecretPasswordKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "acl": {
+          "type": "object",
+          "properties": {
+            "users": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "username",
+                  "enabled",
+                  "commands",
+                  "keys",
+                  "channels"
+                ],
+                "properties": {
+                  "username": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]+$"
+                  },
+                  "enabled": {
+                    "enum": [
+                      "on",
+                      "off"
+                    ]
+                  },
+                  "commands": {
+                    "type": "string",
+                    "pattern": "^[^\\r\\n\\t]+$"
+                  },
+                  "keys": {
+                    "type": "string",
+                    "pattern": "^[^\\r\\n\\t]+$"
+                  },
+                  "channels": {
+                    "type": "string",
+                    "pattern": "^[^\\r\\n\\t]+$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "replica": {
+      "type": "object",
+      "properties": {
+        "replicaCount": {
+          "const": 3
+        }
+      }
+    },
+    "sentinel": {
+      "type": "object",
+      "properties": {
+        "quorum": {
+          "const": 2
+        },
+        "downAfterMilliseconds": {
+          "type": "integer",
+          "minimum": 5000
+        },
+        "masterSet": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": "string",
+          "pattern": "^docker\\.io/oliver006/redis_exporter:v[0-9]+\\.[0-9]+\\.[0-9]+-alpine@sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "clusterDomain": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
+    }
+  }
+}

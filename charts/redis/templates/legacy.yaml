@@ -1,0 +1,38 @@
+{{- $objects := list -}}
+{{- if .Values.migration.retainLegacyConfigMaps -}}
+{{- range $suffix := list "configuration" "scripts" "health" -}}
+{{- $objects = append $objects (dict "kind" "ConfigMap" "name" (printf "%s-%s" $.Release.Name $suffix)) -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.migration.retainLegacyHelmSecret -}}
+{{- $objects = append $objects (dict "kind" "Secret" "name" .Values.auth.existingSecret) -}}
+{{- end -}}
+{{- range $object := $objects }}
+{{- $kind := $object.kind }}
+{{- $name := $object.name }}
+{{- $resource := lookup "v1" $kind $.Release.Namespace $name }}
+{{- if not $resource }}{{ fail (printf "Migration requires existing %s/%s; disable retention only for a fresh installation" $kind $name) }}{{ end }}
+---
+apiVersion: v1
+kind: {{ $kind }}
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  {{- with $resource.metadata.labels }}
+  labels: {{ toYaml . | nindent 4 }}
+  {{- end }}
+  annotations: {{ merge (dict "helm.sh/resource-policy" "keep") ($resource.metadata.annotations | default dict) | toYaml | nindent 4 }}
+  {{- with $resource.metadata.ownerReferences }}
+  ownerReferences: {{ toYaml . | nindent 4 }}
+  {{- end }}
+{{- if eq $kind "Secret" }}
+type: {{ $resource.type }}
+{{- end }}
+{{- if hasKey $resource "immutable" }}
+immutable: {{ $resource.immutable }}
+{{- end }}
+data: {{ $resource.data | toYaml | nindent 2 }}
+{{- with $resource.binaryData }}
+binaryData: {{ toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}

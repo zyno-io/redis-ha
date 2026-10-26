@@ -1,0 +1,131 @@
+{{- if ne (int .Values.replica.replicaCount) 3 }}{{ fail "This handoff contract requires three Redis/Sentinel nodes" }}{{ end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-node
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.replica.replicaCount }}
+  serviceName: {{ .Release.Name }}-headless
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  minReadySeconds: 15
+  selector:
+    matchLabels: {{ include "redis.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "redis.selector" . | nindent 8 }}
+      annotations:
+        checksum/configuration: {{ include (print $.Template.BasePath "/configuration.yaml") . | sha256sum }}
+        {{- with merge (deepCopy .Values.replica.podAnnotations) .Values.metrics.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        fsGroup: 1001
+        fsGroupChangePolicy: Always
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: {{ include "redis.selector" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+      containers:
+        {{- range $name := list "redis" "sentinel" }}
+        - name: {{ $name }}
+          image: {{ $.Values.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: [/bin/bash, /shutdown/startup.sh, {{ $name }}]
+          env: {{ include "redis.env" $ | nindent 12 }}
+          ports:
+            - name: {{ ternary "redis" "redis-sentinel" (eq $name "redis") }}
+              containerPort: {{ ternary 6379 26379 (eq $name "redis") }}
+              protocol: TCP
+          resources: {{ toYaml (ternary $.Values.replica.resources $.Values.sentinel.resources (eq $name "redis")) | nindent 12 }}
+          securityContext: {{ include "redis.security" $ | nindent 12 }}
+          volumeMounts: {{ include "redis.mounts" $ | nindent 12 }}
+          startupProbe:
+            exec:
+              command: [/bin/bash, /shutdown/startup.sh, {{ printf "%s-live" $name }}]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: {{ if eq $name "redis" }}[/bin/bash, -ec, 'timeout 5 /bin/bash /shutdown/shutdown.sh ready']{{ else }}[/bin/bash, /shutdown/startup.sh, sentinel-ping]{{ end }}
+            periodSeconds: 5
+            timeoutSeconds: 6
+            failureThreshold: 1
+          livenessProbe:
+            exec:
+              command: [/bin/bash, /shutdown/startup.sh, {{ printf "%s-live" $name }}]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          lifecycle:
+            {{- if eq $name "redis" }}
+            postStart:
+              exec:
+                command: [/bin/bash, /shutdown/shutdown.sh, started]
+            {{- end }}
+            preStop:
+              exec:
+                command: {{ if eq $name "redis" }}[/bin/bash, -ec, 'timeout 70 /bin/bash /shutdown/shutdown.sh redis']{{ else }}[/bin/bash, /shutdown/shutdown.sh, sentinel]{{ end }}
+        {{- end }}
+        - name: metrics
+          image: {{ .Values.metrics.image | quote }}
+          imagePullPolicy: IfNotPresent
+          args: [--redis.addr=redis://127.0.0.1:6379]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret }}
+                  key: {{ .Values.auth.existingSecretPasswordKey }}
+          ports:
+            - name: metrics
+              containerPort: 9121
+              protocol: TCP
+          resources: {{ toYaml .Values.metrics.resources | nindent 12 }}
+          securityContext: {{ include "redis.security" . | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            periodSeconds: 5
+            timeoutSeconds: 2
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "redis.lifecycleName" . }}
+        - name: configuration
+          configMap:
+            name: {{ .Release.Name }}-runtime-config
+        - name: credentials
+          secret:
+            secretName: {{ required "auth.existingSecret is required" .Values.auth.existingSecret }}
+            defaultMode: 0440
+        - name: runtime
+          emptyDir: {}
+        - name: shutdown-state
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: redis-data
+        labels: {{ include "redis.selector" . | nindent 10 }}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: {{ .Values.replica.persistence.size }}
+        {{- with .Values.replica.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}

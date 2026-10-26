@@ -1,0 +1,102 @@
+name: Verify and release
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  chart:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+      - uses: mikefarah/yq@5a7e72a743649b1b3a47d1a1d8214f3453173c51
+      - run: shellcheck charts/redis/files/*.sh scripts/package.sh
+      - run: python3 tests/render.py
+      - name: Package the verified release
+        run: |
+          tag="v$(yq -r .version charts/redis/Chart.yaml)"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then tag="$GITHUB_REF_NAME"; fi
+          bash scripts/package.sh "$tag"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chart-package
+          path: dist/
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [recovery, migration, maintenance]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+      - uses: mikefarah/yq@5a7e72a743649b1b3a47d1a1d8214f3453173c51
+      - name: Recovery
+        if: matrix.scenario == 'recovery'
+        run: python3 tests/recovery.py
+      - name: First upgrade
+        if: matrix.scenario == 'migration'
+        run: python3 tests/recovery.py --migration-only
+      - name: Rolling maintenance
+        if: matrix.scenario == 'maintenance'
+        run: python3 tests/maintenance.py --official-only
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: disposable-test-results-${{ matrix.scenario }}
+          path: .test-output/**/summary.json
+          if-no-files-found: ignore
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [chart, integration]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: chart-package
+          path: dist
+      - run: cd dist && sha256sum --check SHA256SUMS
+      - name: Require chart publication credential
+        env:
+          GH_TOKEN: ${{ secrets.CHARTS_REPO_TOKEN }}
+        run: |
+          test -n "$GH_TOKEN" || { echo 'Configure CHARTS_REPO_TOKEN with Contents read/write access to zyno-io/charts' >&2; exit 1; }
+      - name: Publish immutable source release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            mkdir -p existing
+            gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir existing
+            for asset in dist/*; do cmp "$asset" "existing/$(basename "$asset")"; done
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.tgz dist/SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "Redis HA $GITHUB_REF_NAME" --generate-notes
+          fi
+      - name: Publish chart through the shared chart index lifecycle
+        env:
+          GH_TOKEN: ${{ secrets.CHARTS_REPO_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          tag="redis-$version"
+          if gh release view "$tag" --repo zyno-io/charts >/dev/null 2>&1; then
+            mkdir -p existing-chart
+            gh release download "$tag" --repo zyno-io/charts --pattern '*.tgz' --dir existing-chart
+            cmp "dist/redis-$version.tgz" "existing-chart/redis-$version.tgz"
+          else
+            gh release create "$tag" "dist/redis-$version.tgz" \
+              --repo zyno-io/charts --title "Redis $version" \
+              --notes "Published from https://github.com/$GITHUB_REPOSITORY/tree/$GITHUB_REF_NAME."
+          fi

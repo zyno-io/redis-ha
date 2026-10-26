@@ -1,0 +1,63 @@
+clusterDomain: cluster.local
+# Docker Official Image; exact patch tag and multi-architecture digest.
+# Redis and Sentinel run the same binary, without Bitnami.
+image: docker.io/library/redis:8.8.3-trixie@sha256:b2ba68d56e7e7ea88b64f4eaf307bceafc012079f227ed795785f4283a592dc0
+auth:
+  existingSecret: redis
+  existingSecretPasswordKey: redis-password
+  acl:
+    users: []
+replica:
+  replicaCount: 3
+  podAnnotations: {}
+  persistence:
+    storageClass: ''
+    size: 1Gi
+  resources:
+    limits:
+      cpu: 150m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+sentinel:
+  masterSet: redis
+  quorum: 2
+  downAfterMilliseconds: 5000
+  failoverTimeout: 10000
+  resources:
+    limits:
+      cpu: 150m
+      memory: 192Mi
+      ephemeral-storage: 2Gi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+      ephemeral-storage: 50Mi
+metrics:
+  image: docker.io/oliver006/redis_exporter:v1.89.0-alpine@sha256:d4e0a0ad55fa4f968eea4519b518b16dac887debd06c790a6be2f60940538d82
+  podAnnotations: {}
+  resources:
+    limits:
+      cpu: 150m
+      memory: 192Mi
+      ephemeral-storage: 2Gi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+      ephemeral-storage: 50Mi
+# Empty replacement PVCs must discover the existing primary. Enable only for
+# deliberate initialization of a brand-new, empty cluster, then disable again.
+bootstrap: false
+migration:
+  # Enable only when Cilium policies must allow the upgrade Job to reach the API.
+  ciliumNetworkPolicy: false
+  kubectlImage: registry.k8s.io/kubectl:v1.36.2@sha256:b0d792e0d8dfb9bb1b922b78b23137e2a34bb6f9667640353a9d2aadd1fd7761
+  # One-time adoption of the installed chart's verified deterministic IDs.
+  # Existing persistent Sentinel identities are always retained untouched.
+  preserveLegacySentinelIdentity: false
+  # Preserve exact old mounted data through the first adoption rollout. New
+  # pods never mount these. Remove later; resource-policy keep prevents pruning.
+  retainLegacyConfigMaps: false
+  # Preserve an existing Helm-managed Secret through adoption when requested.
+  retainLegacyHelmSecret: false

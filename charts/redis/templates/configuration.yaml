@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-runtime-config
+  namespace: {{ .Release.Namespace }}
+data:
+  redis.conf: |
+    bind 0.0.0.0
+    protected-mode yes
+    port 6379
+    dir /data
+    appendonly yes
+    appendfsync everysec
+    save ""
+    maxmemory-policy noeviction
+    # Redis 8.8 JSON and Search modules are part of the pinned official image.
+    loadmodule /usr/local/lib/redis/modules/redisearch.so
+    loadmodule /usr/local/lib/redis/modules/rejson.so
+  sentinel.conf: |
+    port 26379
+    bind 0.0.0.0
+    protected-mode yes
+    sentinel down-after-milliseconds {{ .Values.sentinel.masterSet }} {{ .Values.sentinel.downAfterMilliseconds }}
+    sentinel failover-timeout {{ .Values.sentinel.masterSet }} {{ .Values.sentinel.failoverTimeout }}
+    sentinel parallel-syncs {{ .Values.sentinel.masterSet }} 1
+  users: |
+    {{- range .Values.auth.acl.users }}
+    {{- if not (regexMatch "^[a-zA-Z0-9_-]+$" .username) }}{{ fail "ACL username must be a Secret key and safe ACL identifier" }}{{ end }}
+    {{ printf "%s\t%s\t%s\t%s\t%s" .username .enabled .commands .keys .channels | nindent 4 }}
+    {{- end }}

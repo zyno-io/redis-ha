@@ -1,0 +1,92 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  type: ClusterIP
+  selector: {{ include "redis.selector" . | nindent 4 }}
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: 6379
+      protocol: TCP
+    - name: tcp-sentinel
+      port: 26379
+      targetPort: 26379
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-headless
+  namespace: {{ .Release.Namespace }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+      protocol: TCP
+    - name: tcp-sentinel
+      port: 26379
+      targetPort: redis-sentinel
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-metrics
+  namespace: {{ .Release.Namespace }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http-metrics
+      port: 9121
+      targetPort: metrics
+      protocol: TCP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-node
+  namespace: {{ .Release.Namespace }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: {{ include "redis.selector" . | nindent 6 }}
+---
+# Authentication is required; restrict access further with namespace policies.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress, Egress]
+  egress: [{}]
+  ingress:
+    - ports:
+        - port: 6379
+        - port: 26379
+    - ports:
+        - port: 9121
