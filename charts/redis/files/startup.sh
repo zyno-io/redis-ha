@@ -199,7 +199,7 @@ trap stop_server TERM INT
 while true; do
     heartbeat
     cp /config/redis.conf "$runtime/redis.conf"
-    printf 'aclfile %s\nmasteruser default\nmasterauth %s\nreplica-announce-ip %s\nport 0\nunixsocket %s/redis.sock\nunixsocketperm 600\n' \
+    printf 'aclfile %s\nmasteruser default\nmasterauth %s\nreplica-announce-ip %s\nreplica-announce-port 6379\nport 0\nunixsocket %s/redis.sock\nunixsocketperm 600\n' \
         "$acl" "$(quote "$password")" "$(endpoint "${pod##*-}")" "$runtime" >> "$runtime/redis.conf"
     if [[ -e "$seed_marker" ]]; then printf 'replica-priority 0\n' >> "$runtime/redis.conf"; fi
     if [[ "$bootstrap" == yes ]]; then

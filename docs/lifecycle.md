@@ -30,7 +30,10 @@ That eligibility fence survives container restarts.
 ## Persistence and liveness
 
 Redis loads behind an authenticated private UNIX socket with public TCP disabled
-and its replication fence already configured. Native Redis owns supported
+and its replication fence already configured. Its advertised replica port is
+explicitly 6379 even while the local listener is disabled; an early replication
+handshake must never register port zero with the primary or Sentinel.
+Native Redis owns supported
 truncated AOF-tail recovery. After successful load, the supervisor opens TCP
 6379 and forwards termination signals to the server.
 

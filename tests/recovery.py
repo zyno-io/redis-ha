@@ -295,6 +295,33 @@ def main():
 
             started = time.monotonic()
             replica = next(i for i in range(3) if i != fixture.primary)
+            primary = fixture.primary
+            fixture.stop([replica])
+            delayed = fixture.work / 'delayed-lifecycle'
+            shutil.copytree(ROOT / 'charts/redis/files', delayed)
+            script = delayed / 'startup.sh'
+            text = script.read_text()
+            anchor = 'if [[ "$loaded" == yes ]]; then'
+            assert text.count(anchor) == 1
+            script.write_text(text.replace(anchor, anchor + '\n            sleep 10'))
+            fixture.scripts = delayed
+            fixture.start(replica)
+            eventually(lambda: run('docker', 'exec', '-e', 'REDISCLI_AUTH=fixture-system-password', fixture.data(replica),
+                                  'redis-cli', '-s', '/run/redis-config/redis.sock', 'PING', check=False).stdout.strip() == 'PONG')
+            assert fixture.cli(replica, 'PING', check=False).returncode != 0
+            def advertised_port_is_stable():
+                info = fixture.cli(primary, 'INFO', 'replication')
+                return f'ip={fixture.member(replica)},port=6379,' in info and ',port=0,' not in info
+            eventually(advertised_port_is_stable)
+            fixture.scripts = ROOT / 'charts/redis/files'
+            eventually(fixture.healthy)
+            for i in range(3):
+                assert 'port\n0\n' not in fixture.cli(i, 'SENTINEL', 'REPLICAS', 'redis', sentinel=True)
+            fixture.retained()
+            fixture.record('private loading never advertises replica port zero', started)
+
+            started = time.monotonic()
+            replica = next(i for i in range(3) if i != fixture.primary)
             fixture.stop([replica])
             manifest = fixture.states[replica] / 'data/appendonlydir'
             increment = next(manifest.glob('*.incr.aof'))

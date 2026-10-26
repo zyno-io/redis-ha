@@ -55,11 +55,11 @@ kubectl create secret generic redis-auth --namespace cache \
   --from-file=redis-password=/path/to/redis-password
 
 # Enable bootstrap only for this deliberate, entirely empty installation.
-helm upgrade --install cache zyno/redis --version 0.2.0 --namespace cache \
+helm upgrade --install cache zyno/redis --version 0.2.1 --namespace cache \
   --set auth.existingSecret=redis-auth --set bootstrap=true --wait
 
 # Disable it after the three members are healthy, keeping this exact version.
-helm upgrade cache zyno/redis --version 0.2.0 --namespace cache \
+helm upgrade cache zyno/redis --version 0.2.1 --namespace cache \
   --reuse-values --set bootstrap=false --wait
 ```
 
@@ -143,10 +143,10 @@ python3 tests/render.py
 python3 tests/recovery.py
 python3 tests/recovery.py --migration-only
 python3 tests/maintenance.py --official-only
-bash scripts/package.sh v0.2.0
+bash scripts/package.sh v0.2.1
 ```
 
-The recovery suite checks ten failure/restoration cases. The upgrade fixture
+The recovery suite checks eleven failure/restoration cases. The upgrade fixture
 uses preserved pre-recovery lifecycle behavior and reused Pod IPs. Maintenance
 checks two complete rolls with an ordinary Sentinel client, lease renewal,
 acknowledged writes, JSON/Search persistence, ACL changes, and exporter health.
