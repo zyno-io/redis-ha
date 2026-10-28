@@ -16,7 +16,7 @@ jobs:
         with:
           version: v3.18.4
       - uses: mikefarah/yq@5a7e72a743649b1b3a47d1a1d8214f3453173c51
-      - run: shellcheck charts/redis/files/*.sh scripts/package.sh
+      - run: shellcheck charts/redis/files/*.sh scripts/*.sh
       - run: python3 tests/render.py
       - name: Package the verified release
         run: |

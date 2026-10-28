@@ -108,6 +108,14 @@ with its numeric announcement before each Sentinel refreshes discovery in turn.
 Changing Sentinel replies alone can retain duplicate hostname/numeric aliases
 that the earlier startup rejects. The preparation preserves voter IDs and
 epochs and flushes the normalized configuration before controller replacement.
+The operator then runs the synchronized shutdown hook on the current primary
+without terminating its Pod. This planned handoff replaces Sentinel's in-memory
+hostname-based primary address with a numeric replica address; reply-format
+changes alone do not replace that object. After synchronization, repeat numeric
+preparation to retire the former-primary alias before any old startup runs.
+Native election advances epochs normally; neither transport refresh resets them.
+`scripts/prepare-rollback.sh` performs these preparation steps using an explicit
+context, namespace, and release. It does not delete controllers or Pods.
 Retain hostname resolution, voter IDs, election epochs, all data, credentials,
 and both generations of lifecycle ConfigMaps. Orphan only the StatefulSet
 controller before Helm restores its earlier OrderedReady specification; never

@@ -153,6 +153,23 @@ class Fixture:
                         'data_hash': hashlib.sha256(json.dumps(obj.get('data'), sort_keys=True).encode()).hexdigest()}
         return {'resources': resources, 'voters': [self.cli(i, 'SENTINEL', 'MYID', sentinel=True) for i in range(3)]}
 
+    def rollout_complete(self):
+        stateful = self.obj('statefulset', 'cache-node', '-n', 'database')
+        status = stateful.get('status', {})
+        revision = status.get('updateRevision')
+        if not revision or status.get('updatedReplicas') != 3 or status.get('currentRevision') != revision:
+            return False
+        scripts = next(v['configMap']['name'] for v in stateful['spec']['template']['spec']['volumes'] if v['name'] == 'scripts')
+        pods = self.members()
+        if len(pods) != 3:
+            return False
+        for pod in pods:
+            if pod['metadata'].get('deletionTimestamp') or pod['metadata']['labels'].get('controller-revision-hash') != revision:
+                return False
+            if next(v['configMap']['name'] for v in pod['spec']['volumes'] if v['name'] == 'scripts') != scripts:
+                return False
+        return self.healthy()
+
     def retained(self):
         assert self.identities() == self.baseline
         for index in range(3):
@@ -203,7 +220,7 @@ class Fixture:
         before = self.obj('statefulset', 'cache-node', '-n', 'database')
         self.helm('upgrade', 'cache', str(ROOT / 'charts/redis'), '-n', 'database', '--set', 'replica.persistence.storageClass=standard',
                   '--set', 'metrics.sentinel.enabled=true', '--wait', '--timeout', '5m')
-        eventually(self.healthy)
+        eventually(self.rollout_complete)
         after = self.obj('statefulset', 'cache-node', '-n', 'database')
         assert before['metadata']['uid'] != after['metadata']['uid'] and after['spec']['podManagementPolicy'] == 'Parallel'
         assert all(p['metadata']['ownerReferences'][0]['uid'] == after['metadata']['uid'] for p in self.members())
@@ -213,9 +230,8 @@ class Fixture:
     def rollback(self):
         started = time.monotonic()
         eventually(self.healthy)
-        preparation = (ROOT / 'charts/redis/files/prepare-hostnames.sh').read_text()
-        self.kube('exec', '-i', '-n', 'database', 'cache-node-0', '-c', 'redis', '--', '/bin/bash', '-s', '--', 'numeric',
-                  source=preparation, timeout=180)
+        run('env', 'KUBECONFIG=' + str(Path(self.kubeconfig).resolve()), '/bin/bash', str(ROOT / 'scripts/prepare-rollback.sh'),
+            self.context, 'database', 'cache', timeout=240)
         for index in range(3):
             answer = self.cli(index, 'SENTINEL', 'GET-MASTER-ADDR-BY-NAME', 'redis', sentinel=True)
             assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\n6379', answer)
@@ -223,7 +239,7 @@ class Fixture:
         self.kube('delete', 'statefulset', 'cache-node', '-n', 'database', '--cascade=orphan', '--wait=true')
         assert len(self.members()) == 3
         self.helm('rollback', 'cache', str(self.rollback_revision), '-n', 'database', '--wait', '--timeout', '5m')
-        eventually(self.healthy)
+        eventually(self.rollout_complete)
         after = self.obj('statefulset', 'cache-node', '-n', 'database')
         assert after['metadata']['uid'] != before and after['spec']['podManagementPolicy'] == 'OrderedReady'
         assert all(p['metadata']['ownerReferences'][0]['uid'] == after['metadata']['uid'] for p in self.members())

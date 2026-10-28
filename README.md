@@ -138,15 +138,16 @@ controller-only orphan/recreation. Before downgrading to the earlier numeric-onl
 startup, run the healthy transport preparation in numeric mode:
 
 ```bash
-# Run from the matching source tag; use one currently healthy member Pod.
-kubectl exec -i -n database cache-node-0 -c redis -- \
-  /bin/bash -s -- numeric < charts/redis/files/prepare-hostnames.sh
+# Run from the matching source tag with the explicit context/namespace/release.
+bash scripts/prepare-rollback.sh example-context database cache
 ```
 
 This verifies synchronization and quorum, normalizes Redis and Sentinel
-announcements, reconnects replicas, and refreshes discovery one voter at a time
-without changing voter IDs or election epochs. Changing only Sentinel's reply
-format can leave duplicate address aliases that the earlier startup rejects.
+announcements, reconnects replicas, and refreshes discovery one voter at a time.
+It performs one synchronized native handoff and refreshes discovery again so
+Sentinel's in-memory primary address also becomes numeric. Voter IDs remain
+unchanged and native elections advance epochs normally. Changing only replies
+or replica announcements can leave duplicate address aliases after a handoff.
 Only after preparation succeeds, orphan the named StatefulSet controller and
 use Helm rollback; keep all PVCs, credentials and script ConfigMaps. Prefer a forward fix preserving Parallel
 policy, hostname/election state, credentials, and PVCs. A disposable Kubernetes
@@ -160,7 +161,7 @@ Tests create only disposable Docker/kind resources and ignored local results; fi
 synthetic. No private repository, cluster context, or real Secret is needed.
 
 ```bash
-shellcheck charts/redis/files/*.sh scripts/package.sh
+shellcheck charts/redis/files/*.sh scripts/*.sh
 python3 tests/render.py
 python3 tests/recovery.py
 python3 tests/recovery.py --migration-only
