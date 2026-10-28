@@ -8,6 +8,14 @@ redis_release=${3:?expected Helm release}
 [[ "$redis_release" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
 redis_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 redis_kube=(kubectl --context "$redis_context" --namespace "$redis_namespace" --request-timeout=20s)
+redis_handoff_pod=''
+restore_barrier() {
+    if [[ -n "$redis_handoff_pod" ]]; then
+        "${redis_kube[@]}" exec "$redis_handoff_pod" -c redis -- /bin/bash /shutdown/shutdown.sh started || true
+    fi
+}
+trap restore_barrier EXIT
+"${redis_kube[@]}" rollout status statefulset "$redis_release-node" --timeout=60s
 prepare_numeric() {
     "${redis_kube[@]}" exec -i "$redis_release-node-0" -c redis -- /bin/bash -s -- numeric \
         < "$redis_root/charts/redis/files/prepare-hostnames.sh"
@@ -32,6 +40,7 @@ done
 [[ -n "$redis_primary" ]]
 # The existing hook proves the replication boundary, asks native Sentinel to
 # elect, verifies retained history, and demotes/unpauses the former primary.
+redis_handoff_pod=$redis_primary
 "${redis_kube[@]}" exec "$redis_primary" -c redis -- \
     /bin/bash -ec 'timeout 70 /bin/bash /shutdown/shutdown.sh redis'
 redis_ready=no
@@ -47,5 +56,9 @@ for ((attempt = 0; attempt < 30; attempt++)); do
     sleep 1
 done
 [[ "$redis_ready" == yes ]]
+# This was a planned handoff without Pod termination. Restore the barrier so
+# a later real shutdown still keeps Sentinel alive until its Redis hook ends.
+"${redis_kube[@]}" exec "$redis_primary" -c redis -- /bin/bash /shutdown/shutdown.sh started
+redis_handoff_pod=''
 prepare_numeric
 echo 'Numeric transport and synchronized native handoff prepared; controllers and Pods remain running'

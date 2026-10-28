@@ -230,9 +230,13 @@ class Fixture:
     def rollback(self):
         started = time.monotonic()
         eventually(self.healthy)
+        previous_primary = self.primary
         run('env', 'KUBECONFIG=' + str(Path(self.kubeconfig).resolve()), '/bin/bash', str(ROOT / 'scripts/prepare-rollback.sh'),
             self.context, 'database', 'cache', timeout=240)
+        eventually(self.healthy)
+        assert self.primary != previous_primary
         for index in range(3):
+            self.kube('exec', '-n', 'database', f'cache-node-{index}', '-c', 'redis', '--', 'test', '!', '-e', '/run/redis-shutdown/finished')
             answer = self.cli(index, 'SENTINEL', 'GET-MASTER-ADDR-BY-NAME', 'redis', sentinel=True)
             assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\n6379', answer)
         before = self.obj('statefulset', 'cache-node', '-n', 'database')['metadata']['uid']
