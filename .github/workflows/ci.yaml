@@ -55,9 +55,35 @@ jobs:
           name: disposable-test-results-${{ matrix.scenario }}
           path: .test-output/**/summary.json
           if-no-files-found: ignore
+  kubernetes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+      - uses: mikefarah/yq@5a7e72a743649b1b3a47d1a1d8214f3453173c51
+      - name: Install checksum-verified kind
+        run: |
+          curl -fsSLO https://github.com/kubernetes-sigs/kind/releases/download/v0.27.0/kind-linux-amd64
+          curl -fsSLO https://github.com/kubernetes-sigs/kind/releases/download/v0.27.0/kind-linux-amd64.sha256sum
+          sha256sum --check kind-linux-amd64.sha256sum
+          chmod +x kind-linux-amd64
+          sudo mv kind-linux-amd64 /usr/local/bin/kind
+      - run: python3 tests/kubernetes.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: disposable-kubernetes-results
+          path: |
+            .test-output/kubernetes-*/summary.json
+            .test-output/kubernetes-*/*-failure.json
+            .test-output/kubernetes-*/*.log
+          if-no-files-found: ignore
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [chart, integration]
+    needs: [chart, integration, kubernetes]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

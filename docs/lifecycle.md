@@ -81,3 +81,36 @@ controller. Pods, selectors, Services, PVCs, and credentials remain intact for
 Helm adoption under Parallel policy. An optional Cilium policy admits only the
 Job's API, Redis, and DNS traffic. Subsequent upgrades and fresh installations
 do not render this hook.
+
+## Independent health telemetry
+
+Optional Sentinel exporters run independently of the Redis Pods, one per fixed
+member FQDN. They use the existing exporter image and system Secret, exposing
+native `SENTINEL CKQUORUM`, master status, and peer metrics. They neither select
+a primary nor repair a member. Configuration metrics remain disabled so
+Sentinel credentials cannot become metric labels. A failed or absent Sentinel
+must leave its exporter available with `redis_up` zero; monitoring must also
+detect missing exporter streams. Alert evaluation and notification routing
+belong to the consuming monitoring system.
+
+## Controlled downgrade
+
+The earlier startup fixture accepts numeric Sentinel replies only. A downgrade
+therefore requires a healthy, synchronized deployment before preparing numeric
+transport with `prepare-hostnames.sh numeric`. Every Redis replica reconnects
+with its numeric announcement before each Sentinel refreshes discovery in turn.
+Changing Sentinel replies alone can retain duplicate hostname/numeric aliases
+that the earlier startup rejects. The preparation preserves voter IDs and
+epochs and flushes the normalized configuration before controller replacement.
+Retain hostname resolution, voter IDs, election epochs, all data, credentials,
+and both generations of lifecycle ConfigMaps. Orphan only the StatefulSet
+controller before Helm restores its earlier OrderedReady specification; never
+force a policy replacement that deletes the Pods or their PVCs. Verify adopted
+ownership, ordered replacement, replication, and retained data afterward.
+This restores the earlier implementation's recovery limitations. Prefer a
+forward fix when voting authority or a synchronized topology is unavailable.
+
+The disposable Kubernetes regression exercises this downgrade and a subsequent
+upgrade. It also holds a lower ordinal before volume mounting while higher
+ordinals recover, restores DNS without restarting Sentinel, and verifies that a
+newer observed election epoch prevents selection from an older quorum.

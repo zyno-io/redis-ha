@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.2
+
+Add optional independent native Sentinel exporters, including actual CKQUORUM
+metrics with configuration metrics disabled. Enabling them preserves the Redis
+Pod template. Extend healthy transport preparation to support numeric replies
+for a controlled downgrade, reconnecting replicas and refreshing voter discovery
+before restoring the earlier startup. Add disposable Kubernetes adoption,
+downgrade/re-upgrade, delayed-volume, DNS-restoration and election-epoch checks
+to the required release workflow.
+
 ## 0.2.1
 
 Pin the advertised replica port to 6379 while the local TCP listener is disabled

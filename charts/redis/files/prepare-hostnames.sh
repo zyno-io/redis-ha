@@ -1,5 +1,9 @@
 #!/bin/bash
 set -euo pipefail
+transport=${1:-hostnames}
+[[ "$transport" == hostnames || "$transport" == numeric ]]
+announce_hostnames=yes
+[[ "$transport" != numeric ]] || announce_hostnames=no
 REDISCLI_AUTH=$(< "$REDIS_PASSWORD_FILE")
 export REDISCLI_AUTH
 [[ -n "$REDISCLI_AUTH" && "$REDISCLI_AUTH" != *$'\n'* && "$REDISCLI_AUTH" != *$'\r'* ]]
@@ -7,8 +11,15 @@ cli() { timeout 3 redis-cli --raw -e "$@"; }
 raw_field() { awk -v key="$2" '$0 == key {getline; print; exit}' <<< "$1"; }
 field() { awk -F: -v key="$2" '$1 == key {sub(/\r$/, "", $2); print $2; exit}' <<< "$1"; }
 primary='' primary_count=0
+declare -A announcement
 for ((index = 0; index < REDIS_SHUTDOWN_REPLICAS; index++)); do
     host="$REDIS_NODE_PREFIX-$index.$REDIS_HEADLESS"
+    announcement[$host]=$host
+    if [[ "$transport" == numeric ]]; then
+        address=$(timeout 2 getent ahostsv4 "$host" | awk 'NR == 1 {print $1}')
+        [[ "$address" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
+        announcement[$host]=$address
+    fi
     info=$(cli -h "$host" -p 6379 INFO replication)
     if [[ "$(field "$info" role)" == master ]]; then primary=$host; primary_count=$((primary_count + 1)); fi
     cli -h "$host" -p 26379 SENTINEL CKQUORUM "$REDIS_SHUTDOWN_MASTER_SET" >/dev/null
@@ -28,15 +39,15 @@ for ((index = 0; index < REDIS_SHUTDOWN_REPLICAS; index++)); do
     offset=$(field "$info" slave_repl_offset)
     [[ "$offset" =~ ^[0-9]+$ ]] && ((offset >= source_offset))
 done
-# Enable name support on EVERY voter before any node advertises hostnames.
+# Enable name support on EVERY voter before changing transport announcements.
 for ((index = 0; index < REDIS_SHUTDOWN_REPLICAS; index++)); do
     host="$REDIS_NODE_PREFIX-$index.$REDIS_HEADLESS"
-    cli -h "$host" -p 26379 SENTINEL CONFIG SET resolve-hostnames yes announce-hostnames yes >/dev/null
+    cli -h "$host" -p 26379 SENTINEL CONFIG SET resolve-hostnames yes announce-hostnames "$announce_hostnames" >/dev/null
 done
 for ((index = 0; index < REDIS_SHUTDOWN_REPLICAS; index++)); do
     host="$REDIS_NODE_PREFIX-$index.$REDIS_HEADLESS"
-    cli -h "$host" -p 6379 CONFIG SET replica-announce-ip "$host" >/dev/null
-    cli -h "$host" -p 26379 SENTINEL CONFIG SET announce-ip "$host" >/dev/null
+    cli -h "$host" -p 6379 CONFIG SET replica-announce-ip "${announcement[$host]}" >/dev/null
+    cli -h "$host" -p 26379 SENTINEL CONFIG SET announce-ip "${announcement[$host]}" >/dev/null
 done
 # Redis advertises replica-announce-ip during its replication handshake, not
 # immediately on CONFIG SET. Reconnect one replica at a time before refreshing
@@ -50,7 +61,7 @@ for ((index = 0; index < REDIS_SHUTDOWN_REPLICAS; index++)); do
         info=$(cli -h "$host" -p 6379 INFO replication)
         primary_info=$(cli -h "$primary" -p 6379 INFO replication)
         if [[ "$(field "$info" master_link_status)" == up && "$(field "$info" master_sync_in_progress)" == 0 &&
-            "$primary_info" == *"ip=$host,port=6379,state=online,"* ]]; then ready=yes; break; fi
+            "$primary_info" == *"ip=${announcement[$host]},port=6379,state=online,"* ]]; then ready=yes; break; fi
         sleep 1
     done
     [[ "$ready" == yes ]]
@@ -78,4 +89,4 @@ for ((index = 0; index < REDIS_SHUTDOWN_REPLICAS; index++)); do
         "$(raw_field "$before" config-epoch)" == "$(raw_field "$current" config-epoch)" ]]
     cli -h "$host" -p 26379 SENTINEL FLUSHCONFIG >/dev/null
 done
-echo 'Existing Redis topology verified; hostname discovery migrated without changing voter identities or election epochs'
+echo "Existing Redis topology verified; $transport discovery prepared without changing voter identities or election epochs"

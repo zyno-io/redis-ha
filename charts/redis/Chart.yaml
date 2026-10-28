@@ -2,7 +2,7 @@ apiVersion: v2
 name: redis
 description: Three-node Redis/Sentinel with unattended recovery and synchronized rolling handoff
 type: application
-version: 0.2.1
+version: 0.2.2
 appVersion: 8.8.3
 home: https://github.com/zyno-io/redis-ha
 sources:
