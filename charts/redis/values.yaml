@@ -37,6 +37,17 @@ sentinel:
 metrics:
   image: docker.io/oliver006/redis_exporter:v1.89.0-alpine@sha256:d4e0a0ad55fa4f968eea4519b518b16dac887debd06c790a6be2f60940538d82
   podAnnotations: {}
+  sentinel:
+    # Independent native exporters keep quorum observable during Redis recovery.
+    enabled: false
+    podAnnotations: {}
+    resources:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
   resources:
     limits:
       cpu: 150m

@@ -69,6 +69,20 @@ def main():
     assert after[('Role', 'cache-parallel-migration')]['rules'] == [
         {'apiGroups': ['apps'], 'resources': ['statefulsets'], 'resourceNames': ['cache-node'], 'verbs': ['get', 'list', 'watch', 'delete']}]
     assert not any(key[0] == 'CiliumNetworkPolicy' for key in after)
+    # Native quorum telemetry is optional and never changes the data Pod template.
+    values['metrics'] = {'sentinel': {'enabled': True}}
+    monitored = render(upgrade=True)
+    assert monitored[('StatefulSet', 'cache-node')] == after[('StatefulSet', 'cache-node')]
+    for index in range(3):
+        pod = monitored[('Deployment', f'cache-sentinel-metrics-{index}')]['spec']['template']
+        exporter = pod['spec']['containers'][0]
+        assert exporter['args'] == [f'--redis.addr=redis://cache-node-{index}.cache-headless.database.svc.cluster.local:26379',
+                                    '--include-config-metrics=false']
+        assert exporter['env'][0]['valueFrom']['secretKeyRef'] == {'name': 'redis', 'key': 'redis-password'}
+        assert pod['metadata']['annotations']['prometheus.io/job'] == 'redis-sentinel'
+        assert not pod['spec']['automountServiceAccountToken']
+    assert ('NetworkPolicy', 'cache-sentinel-metrics') in monitored
+    values.pop('metrics')
     values['migration'] = {'ciliumNetworkPolicy': True}
     assert ('CiliumNetworkPolicy', 'cache-parallel-migration') in render(upgrade=True)
     values['fixtureStatefulSet'] = copy.deepcopy(values['fixtureStatefulSet'])

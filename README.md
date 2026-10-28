@@ -123,27 +123,54 @@ default-deny policy requires the migration Job's explicit API, Redis, and DNS
 egress exception. Other policy engines need equivalent environment-owned
 permissions.
 
+For independent quorum monitoring, enable `metrics.sentinel.enabled`. Three
+small exporter Deployments each monitor one member FQDN on port 26379, using
+the existing Secret and pinned exporter image. Their annotated HTTP endpoints
+expose native `redis_sentinel_master_ckquorum_status` and peer metrics even when
+Redis members are recovering. Configuration metrics are explicitly disabled.
+Monitoring consumers own metric retention, missing-stream detection, alerts,
+and notification destinations; exporters never perform recovery actions.
+
 Lifecycle ConfigMaps have content-derived names and Helm's keep annotation.
 Retain old versions while a Pod or rollback release references them; remove
 unreferenced versions deliberately. A downgrade to OrderedReady also requires
-controller-only orphan/recreation. Prefer a forward fix preserving Parallel
+controller-only orphan/recreation. Before downgrading to the earlier numeric-only
+startup, run the healthy transport preparation in numeric mode:
+
+```bash
+# Run from the matching source tag with the explicit context/namespace/release.
+bash scripts/prepare-rollback.sh example-context database cache
+```
+
+This verifies synchronization and quorum, normalizes Redis and Sentinel
+announcements, reconnects replicas, and refreshes discovery one voter at a time.
+It performs one synchronized native handoff, restarts that Redis container with
+its Pod and Sentinel retained, and refreshes discovery again so
+Sentinel's in-memory primary address also becomes numeric. Voter IDs remain
+unchanged and native elections advance epochs normally. Changing only replies
+or replica announcements can leave duplicate address aliases after a handoff.
+The container-local wrapper also terminates Redis if its handoff fails, so an
+uncertain old writer cannot remain running until its write pause expires.
+Only after preparation succeeds, orphan the named StatefulSet controller and
+use Helm rollback; keep all PVCs, credentials and script ConfigMaps. Prefer a forward fix preserving Parallel
 policy, hostname/election state, credentials, and PVCs. A disposable Kubernetes
 adoption/rollback rehearsal and workload-specific client checks remain necessary
 before a live rollout; Docker tests do not prove API-server adoption behavior.
 
 ## Verify
 
-Install Helm, Mike Farah yq, Python 3, shellcheck, and Docker. Tests create only
-disposable Docker resources and ignored local results; fixture credentials are
+Install Helm, Mike Farah yq, Python 3, shellcheck, Docker, and kind 0.27.0.
+Tests create only disposable Docker/kind resources and ignored local results; fixture credentials are
 synthetic. No private repository, cluster context, or real Secret is needed.
 
 ```bash
-shellcheck charts/redis/files/*.sh scripts/package.sh
+shellcheck charts/redis/files/*.sh scripts/*.sh
 python3 tests/render.py
 python3 tests/recovery.py
 python3 tests/recovery.py --migration-only
 python3 tests/maintenance.py --official-only
-bash scripts/package.sh v0.2.1
+python3 tests/kubernetes.py
+bash scripts/package.sh v0.2.2
 ```
 
 The recovery suite checks eleven failure/restoration cases. The upgrade fixture
@@ -152,10 +179,16 @@ checks two complete rolls with an ordinary Sentinel client, lease renewal,
 acknowledged writes, JSON/Search persistence, ACL changes, and exporter health.
 The previous-behavior fixtures are frozen regression inputs, not alternate
 deployment implementations. See [fixture provenance](tests/fixtures/README.md).
+The Kubernetes suite owns a fresh three-node kind cluster and a separate
+kubeconfig. It exercises real StatefulSet orphan/adoption, Helm downgrade and
+re-upgrade, a blocked lower-ordinal volume mount with higher members recovering,
+whole-cluster DNS loss/restoration, native quorum telemetry, and the actual
+discovery function's handling of a newer observed election epoch.
 
 ## Release
 
-CI verifies rendering, Docker recovery, first upgrade, and warm maintenance.
+CI verifies rendering, Docker recovery, first upgrade, warm maintenance, and
+the disposable Kubernetes rehearsal.
 A `v<Chart.yaml version>` tag publishes an immutable source release and the
 same `.tgz` as a `redis-<version>` release in
 [`zyno-io/charts`](https://github.com/zyno-io/charts). That repository's existing

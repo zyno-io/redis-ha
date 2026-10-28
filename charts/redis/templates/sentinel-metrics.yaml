@@ -1,0 +1,98 @@
+{{- if .Values.metrics.sentinel.enabled }}
+{{- range $index := until (int .Values.replica.replicaCount) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-sentinel-metrics-{{ $index }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis-sentinel-metrics
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      redis-member: {{ $index | quote }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis-sentinel-metrics
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        redis-member: {{ $index | quote }}
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '9121'
+        prometheus.io/job: redis-sentinel
+        k8s.grafana.com/metrics.container: metrics
+        {{- with $.Values.metrics.sentinel.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $.Release.Name }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: metrics
+          image: {{ $.Values.metrics.image | quote }}
+          args:
+            - {{ printf "--redis.addr=redis://%s-node-%d.%s-headless.%s.svc.%s:26379" $.Release.Name $index $.Release.Name $.Release.Namespace $.Values.clusterDomain | quote }}
+            - --include-config-metrics=false
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.auth.existingSecret }}
+                  key: {{ $.Values.auth.existingSecretPasswordKey }}
+          ports:
+            - name: metrics
+              containerPort: 9121
+          resources: {{ toYaml $.Values.metrics.sentinel.resources | nindent 12 }}
+          securityContext: {{ include "redis.security" $ | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            periodSeconds: 5
+            timeoutSeconds: 2
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-sentinel-metrics
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis-sentinel-metrics
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - port: 9121
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {{ include "redis.selector" . | nindent 14 }}
+      ports:
+        - port: 26379
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}
