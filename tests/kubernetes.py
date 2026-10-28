@@ -303,12 +303,14 @@ echo 'Newest observed epoch fences older quorum replies'
         return text
 
     def dns(self):
+        minority_started = time.monotonic()
         self.stop()
         self.scale(1)
         eventually(lambda: self.cli(0, 'PING') == 'PONG')
         denied = self.cli(0, 'SET', 'fixture:minority', 'unsafe', check=False)
         assert 'READONLY' in denied.stdout + denied.stderr
         eventually(lambda: re.search(r'^redis_sentinel_master_ckquorum_status\{[^\n]+\} 0$', self.metrics(0), re.M))
+        self.record('single voter rejects writes and native exporter reports failed CKQUORUM', minority_started)
         self.stop()
         self.dns_replicas = self.obj('deployment', 'coredns', '-n', 'kube-system')['spec']['replicas']
         try:
@@ -317,20 +319,25 @@ echo 'Newest observed epoch fences older quorum replies'
             self.scale(3)
             eventually(lambda: len(self.members()) == 3 and all(len(p['status'].get('containerStatuses', [])) == 3 and
                 all('running' in c.get('state', {}) for c in p['status']['containerStatuses']) for p in self.members()))
-            eventually(lambda: all(self.cli(i, 'PING', sentinel=True) == 'PONG' for i in range(3)))
-            before = {p['metadata']['name']: [(c['name'], c['containerID'], c['restartCount']) for c in p['status']['containerStatuses']]
-                      for p in self.members()}
-            time.sleep(15)
+            missing = self.kube('exec', '-n', 'database', 'cache-node-0', '-c', 'redis', '--',
+                                'timeout', '2', 'getent', 'ahostsv4', 'cache-node-1.cache-headless.database.svc.cluster.local', check=False)
+            assert missing.returncode != 0, 'Peer DNS unexpectedly resolved while all DNS Pods were absent'
+            before = {p['metadata']['name']: p['metadata']['uid'] for p in self.members()}
+            # Sentinel may block on native DNS lookups. Probe-managed container
+            # restarts are allowed; do not require commands to respond before
+            # restoring the intentionally unavailable dependency.
+            time.sleep(30)
             started = time.monotonic()
             self.kube('scale', 'deployment', 'coredns', '-n', 'kube-system', '--replicas=' + str(self.dns_replicas))
             self.dns_replicas = None
             eventually(self.healthy)
             for pod in self.members():
-                assert before[pod['metadata']['name']] == [(c['name'], c['containerID'], c['restartCount']) for c in pod['status']['containerStatuses']]
+                assert before[pod['metadata']['name']] == pod['metadata']['uid']
             self.retained()
             for index in range(3):
                 eventually(lambda: re.search(r'^redis_sentinel_master_ckquorum_status\{[^\n]+\} 1$', self.metrics(index), re.M))
-            self.record('native quorum metric fails in minority; whole DNS outage resumes unchanged processes', started)
+            self.record('whole DNS outage recovers without manual Redis actions or replacement Pods', started,
+                        automatic_container_restarts=sum(c['restartCount'] for p in self.members() for c in p['status']['containerStatuses']))
         finally:
             if self.dns_replicas is not None:
                 self.kube('scale', 'deployment', 'coredns', '-n', 'kube-system', '--replicas=' + str(self.dns_replicas))

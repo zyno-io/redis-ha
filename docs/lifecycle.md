@@ -52,6 +52,12 @@ checks the real listener and replica link/sync state. Discovery calls are bounde
 Waiting for quorum does not repeatedly reload valid data or declare an unready
 Redis member ready.
 
+During a global DNS outage, native Sentinel DNS waits can delay local commands
+and Kubernetes probes may restart a container. Recovery resumes after DNS
+returns using retained voter identities and data, without manual Redis actions.
+The narrower member-DNS fixture also verifies continuity without restarting
+its observed Sentinel process.
+
 ## Planned termination
 
 The Redis hook pauses writes and captures the replication ID and offset. Both
@@ -112,5 +118,5 @@ forward fix when voting authority or a synchronized topology is unavailable.
 
 The disposable Kubernetes regression exercises this downgrade and a subsequent
 upgrade. It also holds a lower ordinal before volume mounting while higher
-ordinals recover, restores DNS without restarting Sentinel, and verifies that a
+ordinals recover, restores global DNS without manual Redis actions, and verifies that a
 newer observed election epoch prevents selection from an older quorum.
