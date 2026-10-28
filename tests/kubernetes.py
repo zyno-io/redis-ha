@@ -267,6 +267,7 @@ class Fixture:
         def restarted():
             pod = self.obj('pod', f'cache-node-{former}', '-n', 'database')
             return any(c['name'] == 'redis' and c.get('containerID') and c['containerID'] != old_container
+                       and c.get('state', {}).get('running')
                        for c in pod['status'].get('containerStatuses', []))
         eventually(restarted)
         result = self.kube('exec', '-n', 'database', f'cache-node-{former}', '-c', 'redis', '--',
