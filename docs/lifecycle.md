@@ -109,7 +109,11 @@ Changing Sentinel replies alone can retain duplicate hostname/numeric aliases
 that the earlier startup rejects. The preparation preserves voter IDs and
 epochs and flushes the normalized configuration before controller replacement.
 The operator then runs the synchronized shutdown hook on the current primary
-without terminating its Pod. This planned handoff replaces Sentinel's in-memory
+and restarts that Redis container, keeping its Pod and Sentinel alive. The
+container-local wrapper always terminates Redis after the hook, including its
+failure path, before a failed write pause could expire on an uncertain writer.
+A bounded result file survives the container restart and is removed after the
+operator checks it. This planned handoff replaces Sentinel's in-memory
 hostname-based primary address with a numeric replica address; reply-format
 changes alone do not replace that object. After synchronization, repeat numeric
 preparation to retire the former-primary alias before any old startup runs.

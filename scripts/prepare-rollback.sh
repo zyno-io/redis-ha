@@ -8,13 +8,6 @@ redis_release=${3:?expected Helm release}
 [[ "$redis_release" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
 redis_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 redis_kube=(kubectl --context "$redis_context" --namespace "$redis_namespace" --request-timeout=20s)
-redis_handoff_pod=''
-restore_barrier() {
-    if [[ -n "$redis_handoff_pod" ]]; then
-        "${redis_kube[@]}" exec "$redis_handoff_pod" -c redis -- /bin/bash /shutdown/shutdown.sh started || true
-    fi
-}
-trap restore_barrier EXIT
 "${redis_kube[@]}" rollout status statefulset "$redis_release-node" --timeout=60s
 prepare_numeric() {
     "${redis_kube[@]}" exec -i "$redis_release-node-0" -c redis -- /bin/bash -s -- numeric \
@@ -40,9 +33,31 @@ done
 [[ -n "$redis_primary" ]]
 # The existing hook proves the replication boundary, asks native Sentinel to
 # elect, verifies retained history, and demotes/unpauses the former primary.
-redis_handoff_pod=$redis_primary
-"${redis_kube[@]}" exec "$redis_primary" -c redis -- \
-    /bin/bash -ec 'timeout 70 /bin/bash /shutdown/shutdown.sh redis'
+redis_old_container=$("${redis_kube[@]}" get pod "$redis_primary" \
+    -o 'jsonpath={.status.containerStatuses[?(@.name=="redis")].containerID}')
+[[ -n "$redis_old_container" ]]
+"${redis_kube[@]}" exec "$redis_primary" -c redis -- rm -f /run/redis-shutdown/rollback-handoff-result
+# The exec connection may close as the container terminates. Check the durable
+# result after an observed restart instead of treating connection exit as proof.
+"${redis_kube[@]}" exec -i "$redis_primary" -c redis -- /bin/bash -s \
+    < "$redis_root/scripts/rollback-handoff.sh" || true
+redis_restarted=no
+for ((attempt = 0; attempt < 60; attempt++)); do
+    redis_new_container=$("${redis_kube[@]}" get pod "$redis_primary" \
+        -o 'jsonpath={.status.containerStatuses[?(@.name=="redis")].containerID}')
+    if [[ -n "$redis_new_container" && "$redis_new_container" != "$redis_old_container" ]]; then
+        redis_result=$("${redis_kube[@]}" exec "$redis_primary" -c redis -- cat /run/redis-shutdown/rollback-handoff-result) || {
+            sleep 1
+            continue
+        }
+        "${redis_kube[@]}" exec "$redis_primary" -c redis -- rm -f /run/redis-shutdown/rollback-handoff-result
+        [[ "$redis_result" == 0 ]] || { echo 'Planned handoff failed; Redis was restarted and downgrade preparation is aborted' >&2; exit 1; }
+        redis_restarted=yes
+        break
+    fi
+    sleep 1
+done
+[[ "$redis_restarted" == yes ]]
 redis_ready=no
 for ((attempt = 0; attempt < 30; attempt++)); do
     redis_ready=yes
@@ -56,9 +71,5 @@ for ((attempt = 0; attempt < 30; attempt++)); do
     sleep 1
 done
 [[ "$redis_ready" == yes ]]
-# This was a planned handoff without Pod termination. Restore the barrier so
-# a later real shutdown still keeps Sentinel alive until its Redis hook ends.
-"${redis_kube[@]}" exec "$redis_primary" -c redis -- /bin/bash /shutdown/shutdown.sh started
-redis_handoff_pod=''
 prepare_numeric
-echo 'Numeric transport and synchronized native handoff prepared; controllers and Pods remain running'
+echo 'Numeric transport and synchronized native handoff prepared; controllers, Pods and Sentinel remain running'

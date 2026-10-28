@@ -144,10 +144,13 @@ bash scripts/prepare-rollback.sh example-context database cache
 
 This verifies synchronization and quorum, normalizes Redis and Sentinel
 announcements, reconnects replicas, and refreshes discovery one voter at a time.
-It performs one synchronized native handoff and refreshes discovery again so
+It performs one synchronized native handoff, restarts that Redis container with
+its Pod and Sentinel retained, and refreshes discovery again so
 Sentinel's in-memory primary address also becomes numeric. Voter IDs remain
 unchanged and native elections advance epochs normally. Changing only replies
 or replica announcements can leave duplicate address aliases after a handoff.
+The container-local wrapper also terminates Redis if its handoff fails, so an
+uncertain old writer cannot remain running until its write pause expires.
 Only after preparation succeeds, orphan the named StatefulSet controller and
 use Helm rollback; keep all PVCs, credentials and script ConfigMaps. Prefer a forward fix preserving Parallel
 policy, hostname/election state, credentials, and PVCs. A disposable Kubernetes

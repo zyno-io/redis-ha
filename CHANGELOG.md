@@ -8,7 +8,9 @@ Pod template. Extend healthy transport preparation to support numeric replies
 for a controlled downgrade, reconnecting replicas and refreshing voter discovery
 before restoring the earlier startup. Add disposable Kubernetes adoption,
 downgrade/re-upgrade, delayed-volume, DNS-restoration and election-epoch checks
-to the required release workflow.
+to the required release workflow. Controlled downgrade preparation includes a
+synchronized native handoff and container restart; its failure test verifies
+that an uncertain paused writer is stopped before the pause could expire.
 
 ## 0.2.1
 

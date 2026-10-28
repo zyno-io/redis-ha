@@ -251,6 +251,35 @@ class Fixture:
         self.record('numeric-reply compatibility and controller-only Helm rollback', started)
         self.upgrade()
 
+    def failed_handoff(self):
+        started = time.monotonic()
+        eventually(self.rollout_complete)
+        former = self.primary
+        before = self.obj('pod', f'cache-node-{former}', '-n', 'database')
+        old_container = next(c['containerID'] for c in before['status']['containerStatuses'] if c['name'] == 'redis')
+        self.kube('exec', '-n', 'database', f'cache-node-{former}', '-c', 'redis', '--',
+                  'rm', '-f', '/run/redis-shutdown/rollback-handoff-result')
+        body = (ROOT / 'scripts/rollback-handoff.sh').read_text()
+        # Fail the real hook after its pause by naming a nonexistent Sentinel
+        # master set only for this exec, leaving the Pod's startup env intact.
+        self.kube('exec', '-i', '-n', 'database', f'cache-node-{former}', '-c', 'redis', '--',
+                  'env', 'REDIS_SHUTDOWN_MASTER_SET=fixture-missing', '/bin/bash', '-s', source=body, check=False)
+        def restarted():
+            pod = self.obj('pod', f'cache-node-{former}', '-n', 'database')
+            return any(c['name'] == 'redis' and c.get('containerID') and c['containerID'] != old_container
+                       for c in pod['status'].get('containerStatuses', []))
+        eventually(restarted)
+        result = self.kube('exec', '-n', 'database', f'cache-node-{former}', '-c', 'redis', '--',
+                           'cat', '/run/redis-shutdown/rollback-handoff-result').stdout.strip()
+        assert result and result != '0'
+        self.kube('exec', '-n', 'database', f'cache-node-{former}', '-c', 'redis', '--',
+                  'rm', '-f', '/run/redis-shutdown/rollback-handoff-result')
+        eventually(self.healthy)
+        assert self.obj('pod', f'cache-node-{former}', '-n', 'database')['metadata']['uid'] == before['metadata']['uid']
+        assert self.primary != former
+        self.retained()
+        self.record('failed preparation hook fences the paused writer by container restart; native recovery retains data', started)
+
     def discovery_epochs(self):
         started = time.monotonic()
         source = self.kube('exec', '-n', 'database', 'cache-node-0', '-c', 'redis', '--', 'cat', '/shutdown/startup.sh').stdout
@@ -380,6 +409,7 @@ def main():
     try:
         fixture.setup()
         fixture.upgrade()
+        fixture.failed_handoff()
         fixture.rollback()
         fixture.discovery_epochs()
         fixture.storage()
