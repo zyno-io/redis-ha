@@ -72,18 +72,25 @@ class Fixture:
         if run('docker', 'image', 'inspect', image, check=False).returncode:
             run('docker', 'pull', image, timeout=180)
         platform = 'linux/' + run('docker', 'image', 'inspect', '--format', '{{.Architecture}}', image).stdout.strip()
-        reference = image.split('@')[0].rsplit(':', 1)[0] + '@' + image.split('@')[1]
+        repository = image.split('@')[0].rsplit(':', 1)[0]
+        reference = repository + '@' + image.split('@')[1]
         archive = self.work / 'kubectl-image.tar'
         run('docker', 'save', '-o', str(archive), image)
         for node in nodes:
             with archive.open('rb') as source:
                 subprocess.run(['docker', 'exec', '-i', node['metadata']['name'], 'ctr', '--namespace=k8s.io',
-                                'images', 'import', '--platform', platform, '--index-name', reference, '--digests', '-'], stdin=source,
+                                'images', 'import', '--platform', platform, '--base-name', repository, '--digests', '-'], stdin=source,
                                capture_output=True, check=True, timeout=90)
-            aliases = run('docker', 'exec', node['metadata']['name'], 'ctr', '--namespace=k8s.io', 'images', 'list', '-q').stdout.splitlines()
-            for alias in aliases:
-                if alias.startswith(('import-', 'docker.io/library/import-')) and alias.endswith('@' + image.split('@')[1]):
-                    run('docker', 'exec', node['metadata']['name'], 'ctr', '--namespace=k8s.io', 'images', 'remove', alias)
+            listing = run('docker', 'exec', node['metadata']['name'], 'ctr', '--namespace=k8s.io', 'images', 'list').stdout.splitlines()
+            # Name the original registry manifest, not Docker's outer OCI archive
+            # index. Keep imported aliases that containerd's CRI cache may use.
+            aliases = [line.split()[0] for line in listing[1:]
+                       if len(line.split()) > 2 and line.split()[2] == image.split('@')[1]]
+            if aliases and reference not in aliases:
+                run('docker', 'exec', node['metadata']['name'], 'ctr', '--namespace=k8s.io', 'images', 'tag', '--force', aliases[0], reference)
+            elif not aliases:
+                # Classic Docker archives do not retain the registry index.
+                run('docker', 'exec', node['metadata']['name'], 'crictl', 'pull', image, timeout=120)
 
     def kube(self, *args, source=None, check=True, timeout=40):
         return run('kubectl', '--kubeconfig', self.kubeconfig, '--context', self.context, '--request-timeout=25s',
