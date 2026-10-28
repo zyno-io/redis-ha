@@ -54,6 +54,7 @@ jobs:
         with:
           name: disposable-test-results-${{ matrix.scenario }}
           path: .test-output/**/summary.json
+          include-hidden-files: true
           if-no-files-found: ignore
   kubernetes:
     runs-on: ubuntu-24.04
@@ -76,6 +77,7 @@ jobs:
         if: always()
         with:
           name: disposable-kubernetes-results
+          include-hidden-files: true
           path: |
             .test-output/kubernetes-*/summary.json
             .test-output/kubernetes-*/*-failure.json

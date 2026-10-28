@@ -370,7 +370,9 @@ def main():
             (fixture.work / (resource + '-failure.json')).write_text(fixture.kube('get', resource, '-n', 'database', '-o', 'json', check=False).stdout)
         for index in range(3):
             for container in ['redis', 'sentinel']:
-                (fixture.work / f'cache-node-{index}-{container}.log').write_text(fixture.kube('logs', '-n', 'database', f'cache-node-{index}', '-c', container, '--tail=60', check=False).stdout)
+                text = fixture.kube('logs', '-n', 'database', f'cache-node-{index}', '-c', container, '--tail=60', check=False).stdout
+                (fixture.work / f'cache-node-{index}-{container}.log').write_text(text)
+                print(f'cache-node-{index}/{container}\n{text[-5000:]}', flush=True)
         raise
     finally:
         fixture.close(args.keep)
