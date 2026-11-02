@@ -79,10 +79,13 @@ quote() {
     value=${value//\"/\\\"}
     printf '"%s"' "$value"
 }
-acl="$runtime/$mode.acl"
+acl_destination="$runtime/$mode.acl"
+acl_temporary=$(mktemp "$runtime/$mode.acl.XXXXXX")
+trap 'rm -f -- "$acl_temporary"' EXIT
+acl=$acl_temporary
 operator_user=${REDIS_USERNAME:-default}
 if [[ "$mode" == redis && -n "${REDIS_EXTERNAL_ACL_FILE:-}" ]]; then
-    cp "$REDIS_EXTERNAL_ACL_FILE" "$acl"
+    cat "$REDIS_EXTERNAL_ACL_FILE" > "$acl"
 else
     : > "$acl"
     [[ "$operator_user" == default ]] || printf 'user default off\n' > "$acl"
@@ -120,6 +123,11 @@ while IFS=$'\t' read -r user enabled commands keys channels; do
         printf 'user %s %s #%s %s %s %s\n' "$user" "$enabled" "$(hash "$user_password")" "$keys" "$channels" "$commands" >> "$acl"
     fi
 done < /config/users
+
+chmod 0600 "$acl"
+mv -f -- "$acl" "$acl_destination"
+acl=$acl_destination
+trap - EXIT
 
 if [[ "$mode" == sentinel ]]; then
     mkdir -p /data/sentinel

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2
+
+Build runtime ACLs in private temporary files and atomically replace existing
+copies with owner-only permissions. Read-only external ACL mounts and retained
+runtime files no longer prevent Redis container restarts. Preserve source ACLs,
+bootstrap behavior and data while testing container restart and former-primary
+rejoin with bootstrap disabled.
+
 ## 0.2.2
 
 Add optional independent native Sentinel exporters, including actual CKQUORUM

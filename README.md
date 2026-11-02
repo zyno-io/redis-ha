@@ -218,10 +218,12 @@ python3 tests/modes.py
 python3 tests/modes.py --volatile --external-acl
 python3 tests/modes.py --tls
 python3 tests/modes.py --tls --volatile --external-acl
+python3 tests/acl_restart.py
+python3 tests/acl_restart.py --tls --volatile
 python3 tests/recovery.py --migration-only
 python3 tests/maintenance.py --official-only
 python3 tests/kubernetes.py
-bash scripts/package.sh v0.2.2
+bash scripts/package.sh v0.3.2
 ```
 
 The recovery suite checks eleven failure/restoration cases. The upgrade fixture

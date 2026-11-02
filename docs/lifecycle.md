@@ -23,6 +23,13 @@ server authority when selected; the chart does not generate application password
 Sentinel discovery access is bounded to discovery/monitoring commands. Legacy
 configurations keep the existing default-user authentication behavior.
 
+Each startup rebuilds its runtime ACL in a fresh private temporary file and
+atomically replaces the final ACL with owner-only mode `0600`. This applies to
+generated credentials and externally provisioned ACLs. The mounted source is
+unchanged, and a retained read-only runtime copy cannot prevent a container
+restart. Construction failures remove the temporary file and stop startup;
+they do not start Redis with an incomplete ACL or change data or bootstrap state.
+
 Persistence-enabled mode preserves the existing PVCs, AOF, recovery/quarantine,
 and retained voter history. Persistence-disabled mode uses only per-Pod emptyDir,
 disables AOF and RDB saves, and never treats missing persistence as retained data.

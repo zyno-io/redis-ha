@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [recovery, migration, maintenance, mode-plain-persistent, mode-plain-volatile, mode-tls-persistent, mode-tls-volatile]
+        scenario: [recovery, migration, maintenance, mode-plain-persistent, mode-plain-volatile, mode-tls-persistent, mode-tls-volatile, acl-restart]
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
@@ -62,6 +62,11 @@ jobs:
       - name: Recovery
         if: matrix.scenario == 'recovery'
         run: python3 tests/recovery.py
+      - name: External ACL container restart
+        if: matrix.scenario == 'acl-restart'
+        run: |
+          python3 tests/acl_restart.py
+          python3 tests/acl_restart.py --tls --volatile
       - name: First upgrade
         if: matrix.scenario == 'migration'
         run: python3 tests/recovery.py --migration-only
