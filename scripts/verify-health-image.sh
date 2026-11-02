@@ -12,7 +12,27 @@ trap 'rm -rf "$verification_config"' EXIT
 # An empty config directory alone still allows Docker to discover a native
 # credential store. An explicit registry entry suppresses that discovery.
 printf '%s\n' '{"auths":{"ghcr.io":{}}}' > "$verification_config/config.json"
-for platform in linux/amd64 linux/arm64; do
-    env -u DOCKER_AUTH_CONFIG -u REGISTRY_AUTH_FILE DOCKER_CONFIG="$verification_config" docker pull --platform "$platform" "$image" >/dev/null
-done
+# Pull distinct child manifests: classic Docker image stores cannot pull two
+# platforms sequentially under the same index digest without an overwrite error.
+env -u DOCKER_AUTH_CONFIG -u REGISTRY_AUTH_FILE DOCKER_CONFIG="$verification_config" \
+    docker manifest inspect "$image" > "$verification_config/manifest.json"
+python3 - "$verification_config/manifest.json" > "$verification_config/targets" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding='utf8') as source:
+    manifests = json.load(source)['manifests']
+for architecture in ('amd64', 'arm64'):
+    matches = [item['digest'] for item in manifests if item.get('platform', {}).get('os') == 'linux'
+               and item.get('platform', {}).get('architecture') == architecture]
+    if len(matches) != 1 or not re.fullmatch(r'sha256:[a-f0-9]{64}', matches[0]):
+        raise SystemExit('Health image must contain exactly one Linux ' + architecture + ' manifest')
+    print('linux/' + architecture, matches[0])
+PY
+repository=${image%%:*}
+while read -r platform digest; do
+    env -u DOCKER_AUTH_CONFIG -u REGISTRY_AUTH_FILE DOCKER_CONFIG="$verification_config" \
+        docker pull --platform "$platform" "$repository@$digest" >/dev/null
+done < "$verification_config/targets"
 echo 'Verified public pinned health image for amd64 and arm64'
