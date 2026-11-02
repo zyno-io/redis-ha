@@ -194,6 +194,15 @@ class Fixture:
         run('docker', 'run', '-d', '--name', self.sentinel(index), '--network', 'container:' + name,
             *self.common(index, bootstrap), '--entrypoint', '/bin/bash', self.image, '/health-bin/launcher.sh', 'sentinel')
 
+    def restart_data_container(self, index):
+        # Sentinel shares the data container's network namespace. Recreate it
+        # only after restarting data so it joins the current namespace.
+        run('docker', 'rm', '-f', self.sentinel(index), check=False)
+        run('docker', 'restart', self.data(index))
+        self.current_ip = self.address(self.data(index))
+        run('docker', 'run', '-d', '--name', self.sentinel(index), '--network', 'container:' + self.data(index),
+            *self.common(index, False), '--entrypoint', '/bin/bash', self.image, '/health-bin/launcher.sh', 'sentinel')
+
     def stop(self, indices):
         names = [name for index in indices for name in [self.sentinel(index), self.data(index)]]
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
