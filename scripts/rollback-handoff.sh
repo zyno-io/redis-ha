@@ -8,7 +8,7 @@ if [[ ! -r /proc/1/cmdline || ! -f /shutdown/shutdown.sh || ! -d /run/redis-shut
     exit 1
 fi
 redis_pid_one=$(tr '\0' ' ' < /proc/1/cmdline)
-[[ "$redis_pid_one" == *'/shutdown/startup.sh redis'* ]] || { echo 'Expected the chart Redis supervisor as PID 1' >&2; exit 1; }
+[[ "$redis_pid_one" == *'/shutdown/startup.sh redis'* || "$redis_pid_one" == *'/health-bin/launcher.sh redis'* ]] || { echo 'Expected the chart Redis supervisor as PID 1' >&2; exit 1; }
 result=/run/redis-shutdown/rollback-handoff-result
 trap 'kill -TERM 1' EXIT
 trap 'exit 1' HUP TERM INT

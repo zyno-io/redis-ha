@@ -4,10 +4,8 @@ transport=${1:-hostnames}
 [[ "$transport" == hostnames || "$transport" == numeric ]]
 announce_hostnames=yes
 [[ "$transport" != numeric ]] || announce_hostnames=no
-REDISCLI_AUTH=$(< "$REDIS_PASSWORD_FILE")
-export REDISCLI_AUTH
-[[ -n "$REDISCLI_AUTH" && "$REDISCLI_AUTH" != *$'\n'* && "$REDISCLI_AUTH" != *$'\r'* ]]
-cli() { timeout 3 redis-cli --raw -e "$@"; }
+# shellcheck source=charts/redis/files/transport.sh
+source "${REDIS_LIFECYCLE_DIR:-/shutdown}/transport.sh"
 raw_field() { awk -v key="$2" '$0 == key {getline; print; exit}' <<< "$1"; }
 field() { awk -F: -v key="$2" '$1 == key {sub(/\r$/, "", $2); print $2; exit}' <<< "$1"; }
 primary='' primary_count=0

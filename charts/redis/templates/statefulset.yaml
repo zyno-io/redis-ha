@@ -1,3 +1,20 @@
+{{- $existing := lookup "apps/v1" "StatefulSet" .Release.Namespace (printf "%s-node" .Release.Name) }}
+{{- if $existing }}
+  {{- $existingTLS := false }}
+  {{- range $container := $existing.spec.template.spec.containers }}
+    {{- if eq $container.name "redis" }}
+      {{- range $entry := $container.env }}
+        {{- if and (eq $entry.name "REDIS_TLS_ENABLED") (eq ($entry.value | default "") "yes") }}{{- $existingTLS = true }}{{- end }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- if ne $existingTLS .Values.tls.enabled }}
+    {{- fail "Changing TLS mode of an existing StatefulSet requires an explicit new pool migration" }}
+  {{- end }}
+{{- end }}
+{{- if and $existing (ne (not (empty $existing.spec.volumeClaimTemplates)) .Values.replica.persistence.enabled) }}
+{{- fail "Changing persistence mode of an existing StatefulSet requires an explicit new pool migration; existing PVCs must be preserved" }}
+{{- end }}
 {{- if ne (int .Values.replica.replicaCount) 3 }}{{ fail "This handoff contract requires three Redis/Sentinel nodes" }}{{ end }}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -9,7 +26,7 @@ spec:
   serviceName: {{ .Release.Name }}-headless
   podManagementPolicy: Parallel
   updateStrategy:
-    type: RollingUpdate
+    type: {{ .Values.replica.updateStrategy }}
   minReadySeconds: 15
   selector:
     matchLabels: {{ include "redis.selector" . | nindent 6 }}
@@ -22,6 +39,9 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      {{- with .Values.replica.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
       serviceAccountName: {{ .Release.Name }}
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 90
@@ -34,12 +54,13 @@ spec:
             - labelSelector:
                 matchLabels: {{ include "redis.selector" . | nindent 18 }}
               topologyKey: kubernetes.io/hostname
+      initContainers: {{ include "redis.healthInit" . | nindent 8 }}
       containers:
         {{- range $name := list "redis" "sentinel" }}
         - name: {{ $name }}
           image: {{ $.Values.image | quote }}
           imagePullPolicy: IfNotPresent
-          command: [/bin/bash, /shutdown/startup.sh, {{ $name }}]
+          command: [/bin/bash, /health-bin/launcher.sh, {{ $name }}]
           env: {{ include "redis.env" $ | nindent 12 }}
           ports:
             - name: {{ ternary "redis" "redis-sentinel" (eq $name "redis") }}
@@ -49,20 +70,17 @@ spec:
           securityContext: {{ include "redis.security" $ | nindent 12 }}
           volumeMounts: {{ include "redis.mounts" $ | nindent 12 }}
           startupProbe:
-            exec:
-              command: [/bin/bash, /shutdown/startup.sh, {{ printf "%s-live" $name }}]
+            httpGet: {path: /startup, port: {{ ternary 9122 9123 (eq $name "redis") }}}
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 60
           readinessProbe:
-            exec:
-              command: {{ if eq $name "redis" }}[/bin/bash, -ec, 'timeout 5 /bin/bash /shutdown/shutdown.sh ready']{{ else }}[/bin/bash, /shutdown/startup.sh, sentinel-ping]{{ end }}
+            httpGet: {path: /ready, port: {{ ternary 9122 9123 (eq $name "redis") }}}
             periodSeconds: 5
-            timeoutSeconds: 6
+            timeoutSeconds: 3
             failureThreshold: 1
           livenessProbe:
-            exec:
-              command: [/bin/bash, /shutdown/startup.sh, {{ printf "%s-live" $name }}]
+            httpGet: {path: /live, port: {{ ternary 9122 9123 (eq $name "redis") }}}
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 6
@@ -79,13 +97,30 @@ spec:
         - name: metrics
           image: {{ .Values.metrics.image | quote }}
           imagePullPolicy: IfNotPresent
+          {{- if .Values.tls.enabled }}
+          args:
+            - --redis.addr=rediss://127.0.0.1:6379
+            - --tls-ca-cert-file=/redis-ca/ca.crt
+            - --tls-server-name={{ include "redis.tlsServerName" . }}
+            - --include-config-metrics=false
+            {{- if .Values.metrics.tlsSecret }}
+            - --tls-client-cert-file=/client-tls/tls.crt
+            - --tls-client-key-file=/client-tls/tls.key
+            {{- end }}
+          volumeMounts: {{ include "redis.metricsTlsMounts" . | nindent 12 }}
+          {{- else }}
           args: [--redis.addr=redis://127.0.0.1:6379]
+          {{- end }}
           env:
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.auth.existingSecret }}
-                  key: {{ .Values.auth.existingSecretPasswordKey }}
+                  name: {{ default .Values.auth.existingSecret .Values.metrics.existingSecret }}
+                  key: {{ default .Values.auth.existingSecretPasswordKey .Values.metrics.passwordKey }}
+            {{- if .Values.metrics.username }}
+            - name: REDIS_USER
+              value: {{ .Values.metrics.username | quote }}
+            {{- end }}
           ports:
             - name: metrics
               containerPort: 9121
@@ -99,9 +134,16 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 2
       volumes:
+        - name: health-bin
+          emptyDir: {}
+        {{- include "redis.roleVolumes" . | nindent 8 }}
+        {{- include "redis.metricsTlsVolumes" . | nindent 8 }}
         - name: scripts
           configMap:
             name: {{ include "redis.lifecycleName" . }}
+        - name: bootstrap
+          configMap:
+            name: {{ .Release.Name }}-bootstrap
         - name: configuration
           configMap:
             name: {{ .Release.Name }}-runtime-config
@@ -115,6 +157,11 @@ spec:
           emptyDir: {}
         - name: tmp
           emptyDir: {}
+        {{- if not .Values.replica.persistence.enabled }}
+        - name: redis-data
+          emptyDir: {}
+        {{- end }}
+  {{- if .Values.replica.persistence.enabled }}
   volumeClaimTemplates:
     - apiVersion: v1
       kind: PersistentVolumeClaim
@@ -129,3 +176,4 @@ spec:
         {{- with .Values.replica.persistence.storageClass }}
         storageClassName: {{ . | quote }}
         {{- end }}
+{{- end }}

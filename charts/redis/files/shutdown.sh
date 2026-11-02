@@ -16,33 +16,19 @@ case "${1:?expected redis, sentinel, ready, or started}" in
         ;;
 esac
 
-[[ -n "${REDIS_PASSWORD:-}" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
-if [[ -f "${REDIS_PASSWORD_FILE:-}" ]]; then
-    REDISCLI_AUTH=$(< "$REDIS_PASSWORD_FILE")
-    export REDISCLI_AUTH
-fi
-
-redis_args=(--raw -e)
-sentinel_args=(--raw -e)
-if [[ "${REDIS_TLS_ENABLED:-no}" == yes ]]; then
-    redis_args+=(--tls --cert "$REDIS_TLS_CERT_FILE" --key "$REDIS_TLS_KEY_FILE")
-    [[ -n "${REDIS_TLS_CA_FILE:-}" ]] && redis_args+=(--cacert "$REDIS_TLS_CA_FILE")
-fi
-if [[ "${REDIS_SENTINEL_TLS_ENABLED:-no}" == yes ]]; then
-    sentinel_args+=(--tls --cert "$REDIS_SENTINEL_TLS_CERT_FILE" --key "$REDIS_SENTINEL_TLS_KEY_FILE")
-    [[ -n "${REDIS_SENTINEL_TLS_CA_FILE:-}" ]] && sentinel_args+=(--cacert "$REDIS_SENTINEL_TLS_CA_FILE")
-fi
-redis_port=${REDIS_TLS_PORT:-${REDIS_PORT:-6379}}
-sentinel_port=${REDIS_SENTINEL_TLS_PORT_NUMBER:-${REDIS_SENTINEL_PORT:-26379}}
+# shellcheck source=charts/redis/files/transport.sh
+source "${REDIS_LIFECYCLE_DIR:-/shutdown}/transport.sh"
+redis_port=6379
+sentinel_port=26379
 master_set=${REDIS_SHUTDOWN_MASTER_SET:?master set is required}
 
 redis_command() {
     local host=$1 port=$2
     shift 2
-    timeout 2 redis-cli "${redis_args[@]}" -h "$host" -p "$port" "$@"
+    cli -h "$host" -p "$port" "$@"
 }
 sentinel_command() {
-    timeout 2 redis-cli "${sentinel_args[@]}" -h 127.0.0.1 -p "$sentinel_port" SENTINEL "$@"
+    cli -h 127.0.0.1 -p "$sentinel_port" SENTINEL "$@"
 }
 field() {
     local info=$1 key=$2

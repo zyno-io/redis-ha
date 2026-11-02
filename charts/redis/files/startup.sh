@@ -3,10 +3,9 @@ set -euo pipefail
 umask 077
 
 mode=${1:?expected redis, sentinel, redis-ping, sentinel-ping, redis-live, or sentinel-live}
-password=$(< "${REDIS_PASSWORD_FILE:?password file is required}")
-[[ -n "$password" && "$password" != *$'\n'* && "$password" != *$'\r'* ]]
-export REDISCLI_AUTH="$password"
-cli() { timeout 2 redis-cli --raw -e "$@"; }
+# shellcheck source=charts/redis/files/transport.sh
+source "${REDIS_LIFECYCLE_DIR:-/shutdown}/transport.sh"
+password=$REDISCLI_AUTH
 case "$mode" in
     redis-live|sentinel-live)
         waiting="/run/redis-config/${mode%-live}.waiting"
@@ -17,6 +16,9 @@ case "$mode" in
     sentinel-ping) [[ "$(cli -h 127.0.0.1 -p 26379 PING)" == PONG ]]; exit ;;
 esac
 [[ "$mode" == redis || "$mode" == sentinel ]]
+bootstrap_gate=${REDIS_BOOTSTRAP:-no}
+if [[ -n "${REDIS_BOOTSTRAP_FILE:-}" ]]; then bootstrap_gate=$(< "$REDIS_BOOTSTRAP_FILE"); fi
+[[ "$bootstrap_gate" == yes || "$bootstrap_gate" == no ]]
 master_set=${REDIS_SHUTDOWN_MASTER_SET:?}
 replicas=${REDIS_SHUTDOWN_REPLICAS:?}
 quorum=${REDIS_SENTINEL_QUORUM:?}
@@ -78,8 +80,36 @@ quote() {
     printf '"%s"' "$value"
 }
 acl="$runtime/$mode.acl"
-printf 'user default on #%s ~* &* +@all\n' "$(hash "$password")" > "$acl"
+operator_user=${REDIS_USERNAME:-default}
+if [[ "$mode" == redis && -n "${REDIS_EXTERNAL_ACL_FILE:-}" ]]; then
+    cp "$REDIS_EXTERNAL_ACL_FILE" "$acl"
+else
+    : > "$acl"
+    [[ "$operator_user" == default ]] || printf 'user default off\n' > "$acl"
+    printf 'user %s reset on #%s ~* &* +@all\n' "$operator_user" "$(hash "$password")" >> "$acl"
+fi
+replication_user=${REDIS_REPLICATION_USERNAME:-default}
+replication_password=$(< "${REDIS_REPLICATION_PASSWORD_FILE:-$REDIS_PASSWORD_FILE}")
+monitor_user=${REDIS_MONITOR_USERNAME:-default}
+monitor_password=$(< "${REDIS_MONITOR_PASSWORD_FILE:-$REDIS_PASSWORD_FILE}")
+for secret in "$replication_password" "$monitor_password"; do
+    [[ -n "$secret" && "$secret" != *$'\n'* && "$secret" != *$'\r'* ]]
+done
+if [[ "$mode" == sentinel ]]; then
+    [[ "$monitor_user" == "$operator_user" ]] || printf 'user %s reset on #%s +hello +ping +info +client|setname +client|setinfo +sentinel|is-master-down-by-addr +publish &__sentinel__:hello\n' "$monitor_user" "$(hash "$monitor_password")" >> "$acl"
+    if [[ -n "${REDIS_DISCOVERY_USERNAME:-}" ]]; then
+        discovery_password=$(< "${REDIS_DISCOVERY_PASSWORD_FILE:?discovery credential required}")
+        [[ -n "$discovery_password" && "$discovery_password" != *$'\n'* && "$discovery_password" != *$'\r'* ]]
+        printf 'user %s reset on #%s +hello +ping +info +client|setname +client|setinfo +sentinel|get-master-addr-by-name +sentinel|sentinels +sentinel|replicas +sentinel|master +sentinel|masters +sentinel|ckquorum +subscribe &+switch-master\n' "$REDIS_DISCOVERY_USERNAME" "$(hash "$discovery_password")" >> "$acl"
+    fi
+    if [[ -n "${REDIS_SENTINEL_METRICS_USERNAME:-}" ]]; then
+        metrics_password=$(< "${REDIS_SENTINEL_METRICS_PASSWORD_FILE:?Sentinel metrics credential required}")
+        [[ -n "$metrics_password" && "$metrics_password" != *$'\n'* && "$metrics_password" != *$'\r'* ]]
+        printf 'user %s reset on #%s +hello +ping +info +role +client|setname +client|setinfo +sentinel|master +sentinel|masters +sentinel|replicas +sentinel|sentinels +sentinel|ckquorum\n' "$REDIS_SENTINEL_METRICS_USERNAME" "$(hash "$metrics_password")" >> "$acl"
+    fi
+fi
 while IFS=$'\t' read -r user enabled commands keys channels; do
+    [[ "$mode" != redis || -z "${REDIS_EXTERNAL_ACL_FILE:-}" ]] || continue
     [[ -n "$user" ]] || continue
     [[ "$user" =~ ^[a-zA-Z0-9_-]+$ && -n "$commands" && -n "$keys" && -n "$channels" ]]
     user_password=$(< "/secrets/$user")
@@ -104,7 +134,7 @@ if [[ "$mode" == sentinel ]]; then
     fi
     while [[ -z "$master_host" ]]; do
         if discover_live_primary; then break; fi
-        if [[ "${REDIS_BOOTSTRAP:-no}" == yes ]]; then master_host=$(endpoint 0); break; fi
+        if [[ "$bootstrap_gate" == yes ]]; then master_host=$(endpoint 0); break; fi
         heartbeat
         echo 'Waiting for retained Sentinel authority or a quorum-verified primary' >&2
         sleep 2
@@ -124,8 +154,8 @@ if [[ "$mode" == sentinel ]]; then
     mv "$runtime/sentinel.header" "$runtime/sentinel.conf"
     cat /config/sentinel.conf >> "$runtime/sentinel.conf"
     own_host=$(endpoint "${pod##*-}")
-    printf 'aclfile %s\nsentinel auth-user %s default\nsentinel auth-pass %s %s\nsentinel sentinel-user default\nsentinel sentinel-pass %s\nsentinel announce-ip %s\n' \
-        "$acl" "$master_set" "$master_set" "$(quote "$password")" "$(quote "$password")" "$own_host" >> "$runtime/sentinel.conf"
+    printf 'aclfile %s\nsentinel auth-user %s %s\nsentinel auth-pass %s %s\nsentinel sentinel-user %s\nsentinel sentinel-pass %s\nsentinel announce-ip %s\n' \
+        "$acl" "$master_set" "$monitor_user" "$master_set" "$(quote "$monitor_password")" "$monitor_user" "$(quote "$monitor_password")" "$own_host" >> "$runtime/sentinel.conf"
     for ((index = 0; index < replicas; index++)); do
         member=$(endpoint "$index")
         # Seed the fixed data-member inventory even when every Redis process is
@@ -178,7 +208,7 @@ desired_priority=$(awk '$1 == "replica-priority" {priority=$2} END {print priori
 [[ "$desired_priority" =~ ^[0-9]+$ ]]
 seed_marker=/data/.recovery-needs-seed
 bootstrap=no
-if [[ "${REDIS_BOOTSTRAP:-no}" == yes && "$pod" == "$REDIS_NODE_PREFIX-0" &&
+if [[ "$bootstrap_gate" == yes && "$pod" == "$REDIS_NODE_PREFIX-0" &&
     ! -e /data/.initialized && ! -e /data/appendonlydir && ! -e /data/dump.rdb ]]; then bootstrap=yes; fi
 if [[ "$bootstrap" != yes && ! -e /data/appendonlydir && ! -e /data/dump.rdb && ! -e "$seed_marker" ]]; then
     printf '%s\n' "$desired_priority" > "$seed_marker"
@@ -199,8 +229,8 @@ trap stop_server TERM INT
 while true; do
     heartbeat
     cp /config/redis.conf "$runtime/redis.conf"
-    printf 'aclfile %s\nmasteruser default\nmasterauth %s\nreplica-announce-ip %s\nreplica-announce-port 6379\nport 0\nunixsocket %s/redis.sock\nunixsocketperm 600\n' \
-        "$acl" "$(quote "$password")" "$(endpoint "${pod##*-}")" "$runtime" >> "$runtime/redis.conf"
+    printf 'aclfile %s\nmasteruser %s\nmasterauth %s\nreplica-announce-ip %s\nreplica-announce-port 6379\nport 0\ntls-port 0\nunixsocket %s/redis.sock\nunixsocketperm 600\n' \
+        "$acl" "$replication_user" "$(quote "$replication_password")" "$(endpoint "${pod##*-}")" "$runtime" >> "$runtime/redis.conf"
     if [[ -e "$seed_marker" ]]; then printf 'replica-priority 0\n' >> "$runtime/redis.conf"; fi
     if [[ "$bootstrap" == yes ]]; then
         echo 'Initializing explicitly enabled empty node zero'
@@ -222,12 +252,14 @@ while true; do
         loaded=no
         while kill -0 "$server_pid" 2>/dev/null; do
             heartbeat
-            if cli -s "$runtime/redis.sock" PING >/dev/null 2>&1; then loaded=yes; break; fi
+            if local_cli -s "$runtime/redis.sock" PING >/dev/null 2>&1; then loaded=yes; break; fi
             sleep 0.2
         done
         if [[ "$loaded" == yes ]]; then
-            cli -s "$runtime/redis.sock" CONFIG SET port 6379 >/dev/null
-            cli -s "$runtime/redis.sock" CONFIG REWRITE >/dev/null
+            listener=port
+            [[ "${REDIS_TLS_ENABLED:-no}" != yes ]] || listener=tls-port
+            local_cli -s "$runtime/redis.sock" CONFIG SET "$listener" 6379 >/dev/null
+            local_cli -s "$runtime/redis.sock" CONFIG REWRITE >/dev/null
             rm -f "$runtime/$mode.waiting"
             wait "$server_pid"
             exit $?

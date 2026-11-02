@@ -1,0 +1,8 @@
+# Initialization policy is mounted separately: disabling it never rolls members.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-bootstrap
+  namespace: {{ .Release.Namespace }}
+data:
+  enabled: {{ ternary "yes" "no" .Values.bootstrap | quote }}

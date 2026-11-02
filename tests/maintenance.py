@@ -102,6 +102,8 @@ def main():
                 state.mkdir(mode=0o777)
                 (state / "data").mkdir(mode=0o777)
                 (state / "runtime").mkdir(mode=0o777)
+                for directory in [state, state / "data", state / "runtime"]:
+                    directory.chmod(0o777)
                 command = (
                     "printf '%s\\n' 'user default on >fixture-system-password ~* &* +@all' "
                     "'user fixture-client on >fixture-client-password ~lease:* &lease:* +@all -@admin' >/tmp/acl; "
@@ -114,7 +116,7 @@ def main():
                     command += ("--loadmodule /opt/bitnami/redis/lib/redis/modules/redisearch.so "
                                 "--loadmodule /opt/bitnami/redis/lib/redis/modules/rejson.so")
                 comparison_mount = ["--mount", f"type=bind,src={ROOT / 'tests/handoff-candidates.sh'},dst=/candidates.sh,readonly"]
-                initial_security = ["--user", "1001:1001", "--read-only", "--tmpfs", "/tmp"] if args.official_only else []
+                initial_security = ["--user", "1001:1001", "--group-add", str(os.getgid()), "--read-only", "--tmpfs", "/tmp"] if args.official_only else []
                 names.append(name)
                 run("docker", "run", "-d", "--name", name, "--hostname", f"redis-node-{index}",
                     "--network", network, "--network-alias", "redis-sentinel", "--network-alias", f"redis-node-{index}.redis-headless.redis.svc.cluster.local",
@@ -169,6 +171,7 @@ sentinel announce-ip {ip}
                     # Resetting myid on replacement distorts election timing.
                     directory = state / "data/sentinel"
                     directory.mkdir(mode=0o777)
+                    directory.chmod(0o777)
                     saved = directory / "sentinel.conf"
                     saved.write_text(config)
                     saved.chmod(0o666)
@@ -197,9 +200,10 @@ sentinel announce-ip {ip}
                     "master_link_status:up" in cli(i, "INFO", "replication") for i in (1, 2))
             eventually(healthy)
             if args.official_only:
-                run("docker", "run", "--rm", "--network", network, "--user", "1001:1001", "--read-only",
+                run("docker", "run", "--rm", "--network", network, "--user", "1001:1001", "--group-add", str(os.getgid()), "--read-only",
                     "--mount", f"type=bind,src={secrets},dst=/secrets,readonly",
                     "--mount", f"type=bind,src={ROOT / 'charts/redis/files/prepare-hostnames.sh'},dst=/prepare.sh,readonly",
+                    "--mount", f"type=bind,src={ROOT / 'charts/redis/files'},dst=/shutdown,readonly",
                     "-e", "REDIS_PASSWORD_FILE=/secrets/redis-password", "-e", "REDIS_SHUTDOWN_MASTER_SET=redis",
                     "-e", "REDIS_SHUTDOWN_REPLICAS=3", "-e", "REDIS_NODE_PREFIX=redis-node",
                     "-e", "REDIS_HEADLESS=redis-headless.redis.svc.cluster.local", "--entrypoint", "/bin/bash", native, "/prepare.sh")
@@ -348,7 +352,7 @@ export -f redis-cli
                     # volume and UID 1001, like the unchanged PVC template.
                     run("docker", "rm", sentinel, name)
                     state = nodes[index][2]
-                    common = ["--user", "1001:1001", "--read-only", "--tmpfs", "/tmp",
+                    common = ["--mount", f"type=bind,src={ROOT / '.test-output/health-bin'},dst=/health-bin,readonly", "--user", "1001:1001", "--group-add", str(os.getgid()), "--read-only", "--tmpfs", "/tmp",
                         "--mount", f"type=bind,src={ROOT / 'charts/redis/files'},dst=/shutdown,readonly",
                         "--mount", f"type=bind,src={configuration},dst=/config,readonly",
                         "--mount", f"type=bind,src={secrets},dst=/secrets,readonly",
@@ -368,13 +372,13 @@ export -f redis-cli
                     run("docker", "run", "-d", "--name", name, "--hostname", f"redis-node-{index}",
                         "--network", network, "--ip", replacement_ip, "--network-alias", "redis-sentinel", "--network-alias", f"redis-node-{index}.redis-headless.redis.svc.cluster.local",
                         *common, "--entrypoint", "/bin/bash", native, "-ec",
-                        "while [[ ! -f /run/redis-shutdown/pod-ip ]]; do sleep 0.1; done; export POD_IP=$(cat /run/redis-shutdown/pod-ip); exec /bin/bash /shutdown/startup.sh redis")
+                        "while [[ ! -f /run/redis-shutdown/pod-ip ]]; do sleep 0.1; done; export POD_IP=$(cat /run/redis-shutdown/pod-ip); exec /bin/bash /health-bin/launcher.sh redis")
                     ip = run("docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name).stdout.strip()
                     assert ip != nodes[index][1], "Each replacement must exercise a changed pod IP"
                     nodes[index] = (name, ip, state)
                     (state / "pod-ip").write_text(ip)
                     run("docker", "run", "-d", "--name", sentinel, "--network", "container:" + name,
-                        *common, "-e", f"POD_IP={ip}", "--entrypoint", "/bin/bash", native, "/shutdown/startup.sh", "sentinel")
+                        *common, "-e", f"POD_IP={ip}", "--entrypoint", "/bin/bash", native, "/health-bin/launcher.sh", "sentinel")
                     eventually(lambda: cli(index, "PING") == "PONG", timeout=90)
                     assert cli(index, "GET", "lease:durable") == "preserved-across-image-migration"
                     assert "retained" in cli(index, "JSON.GET", "lease:json")
@@ -402,7 +406,7 @@ export -f redis-cli
                 metrics = prefix + "-metrics"
                 names.append(metrics)
                 run("docker", "run", "-d", "--name", metrics, "--network", "container:" + nodes[0][0],
-                    "--user", "1001:1001", "--read-only", "-e", "REDIS_PASSWORD=fixture-system-password",
+                    "--user", "1001:1001", "--group-add", str(os.getgid()), "--read-only", "-e", "REDIS_PASSWORD=fixture-system-password",
                     exporter, "--redis.addr=redis://127.0.0.1:6379")
                 probe = "(async () => { const response = await fetch('http://redis-node-0.redis-headless.redis.svc.cluster.local:9121/metrics'); const body = await response.text(); if (!body.includes('redis_up 1')) process.exit(1); })()"
                 eventually(lambda: run("docker", "exec", lease_name, "node", "-e", probe, check=False).returncode == 0)
@@ -413,7 +417,8 @@ export -f redis-cli
                 names.append(isolated)
                 empty = work / "isolated-data"
                 empty.mkdir(mode=0o777)
-                blocked = run("docker", "run", "--name", isolated, "--network", "none", "--user", "1001:1001",
+                empty.chmod(0o777)
+                blocked = run("docker", "run", "--name", isolated, "--network", "none", "--user", "1001:1001", "--group-add", str(os.getgid()),
                     "--mount", f"type=bind,src={ROOT / 'charts/redis/files'},dst=/shutdown,readonly",
                     "--mount", f"type=bind,src={configuration},dst=/config,readonly",
                     "--mount", f"type=bind,src={secrets},dst=/secrets,readonly",

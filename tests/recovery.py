@@ -5,6 +5,7 @@ import concurrent.futures
 import hashlib
 import ipaddress
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -40,7 +41,10 @@ def fields(source):
 
 
 class Fixture:
-    def __init__(self):
+    def __init__(self, tls=False, persistence=True, external_acl=False, consumer_acl=None):
+        self.tls = tls
+        self.persistence = persistence
+        self.external_acl = external_acl
         cache = ROOT / '.test-output'
         cache.mkdir(parents=True, exist_ok=True)
         self.work = Path(tempfile.mkdtemp(prefix='recovery-', dir=cache))
@@ -54,20 +58,63 @@ class Fixture:
         for image in [self.image]:
             if run('docker', 'image', 'inspect', image, check=False).returncode:
                 run('docker', 'pull', image)
+        self.bootstrap_dir = self.work / 'bootstrap'
+        self.bootstrap_dir.mkdir()
+        self.bootstrap_file = self.bootstrap_dir / 'enabled'
+        self.bootstrap_file.write_text('no')
         self.config = self.work / 'config'
         self.config.mkdir()
         self.secrets = self.work / 'secrets'
         self.secrets.mkdir()
         (self.secrets / 'redis-password').write_text('fixture-system-password')
         (self.secrets / 'client').write_text('fixture-client-password')
+        self.values = {'replica': {'persistence': {'enabled': persistence}}}
+        self.tls_dir = self.work / 'tls'
+        if tls:
+            self.tls_dir.mkdir()
+            run('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+                '-subj', '/CN=redis.fixture', '-addext', 'subjectAltName=DNS:redis.fixture,DNS:localhost,IP:127.0.0.1',
+                '-keyout', str(self.tls_dir / 'tls.key'), '-out', str(self.tls_dir / 'tls.crt'))
+            shutil.copyfile(self.tls_dir / 'tls.crt', self.tls_dir / 'ca.crt')
+            (self.tls_dir / 'tls.key').chmod(0o644)
+            run('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+                '-subj', '/CN=untrusted.fixture', '-keyout', str(self.tls_dir / 'wrong-ca.key'),
+                '-out', str(self.tls_dir / 'wrong-ca.crt'))
+            self.values['tls'] = {'enabled': True, 'existingSecret': 'fixture-tls', 'serverName': 'redis.fixture'}
+        self.operator = 'operator' if external_acl else 'default'
+        if external_acl:
+            self.values['replica']['minReplicasToWrite'] = 1
+            for role in ['replication', 'monitor', 'discovery', 'sentinel-metrics']:
+                (self.secrets / role).write_text('fixture-' + role + '-password')
+            self.values['auth'] = {'operator': {'username': 'operator'},
+                'replication': {'username': 'replication', 'passwordKey': 'replication'},
+                'monitor': {'username': 'monitor', 'passwordKey': 'monitor'},
+                'discovery': {'username': 'discovery', 'passwordKey': 'discovery'},
+                'acl': {'existingSecret': 'fixture-acl'}}
+            self.values['metrics'] = {'sentinel': {'enabled': True, 'username': 'sentinel-metrics',
+                                                   'passwordKey': 'sentinel-metrics'}}
+        values_path = self.work / 'values.json'
+        values_path.write_text(json.dumps(self.values))
         rendered = run('helm', 'template', 'redis', str(ROOT / 'charts/redis'), '--namespace', 'redis',
-                       '--set', 'migration.retainLegacyConfigMaps=false').stdout
+                       '-f', str(values_path)).stdout
         path = self.work / 'rendered.yaml'
         path.write_text(rendered)
         configuration = json.loads(run('yq', '-o=json', 'select(.kind == "ConfigMap" and .metadata.name == "redis-runtime-config")', str(path)).stdout)['data']
         for name, source in configuration.items():
             (self.config / name).write_text(source)
-        (self.config / 'users').write_text('client\ton\t+@all -@admin\t~fixture:*\t&fixture:*\n')
+        (self.config / 'users').write_text('' if external_acl else 'client\ton\t+@all -@admin\t~fixture:*\t&fixture:*\n')
+        if external_acl:
+            users = [('operator', 'fixture-system-password', '+@all ~* &*'),
+                     ('replication', 'fixture-replication-password', '+ping +replconf +psync'),
+                     ('monitor', 'fixture-monitor-password', '+ping +info +role +publish +subscribe +multi +exec +client|setname +client|setinfo +config|rewrite +client|kill +replicaof +slaveof ~* &__sentinel__:hello'),
+                     ('client', 'fixture-client-password', '+get +set +persist ~fixture:*')]
+            acl = 'user default off\n' + ''.join('user ' + user + ' on #' + hashlib.sha256(password.encode()).hexdigest() + ' ' + commands + '\n' for user, password, commands in users)
+            if consumer_acl is not None:
+                extra = Path(consumer_acl).read_text()
+                if len(extra.encode()) > 65536 or '\r' in extra or '\0' in extra:
+                    raise ValueError('Consumer ACL must be bounded synthetic ACL text')
+                acl += extra.rstrip('\n') + '\n'
+            (self.config / 'users.acl').write_text(acl)
         run('docker', 'network', 'create', self.prefix)
         subnet = run('docker', 'network', 'inspect', '-f', '{{(index .IPAM.Config 0).Subnet}}', self.prefix).stdout.strip()
         self.network = ipaddress.ip_network(subnet)
@@ -101,9 +148,13 @@ class Fixture:
 
     def common(self, index, bootstrap):
         state = self.states[index]
-        return ['--user', '1001:1001', '--read-only', '--tmpfs', '/tmp',
+        self.bootstrap_file.write_text('yes' if bootstrap else 'no')
+        result = ['--user', '1001:1001', '--group-add', str(os.getgid()), '--read-only', '--tmpfs', '/tmp',
                 '--mount', f'type=bind,src={self.scripts},dst=/shutdown,readonly',
+                '--mount', f'type=bind,src={ROOT / ".test-output/health-bin"},dst=/health-bin,readonly',
                 '--mount', f'type=bind,src={self.config},dst=/config,readonly',
+                '--mount', f'type=bind,src={self.bootstrap_dir},dst=/bootstrap,readonly',
+                '-e', 'REDIS_BOOTSTRAP_FILE=/bootstrap/enabled',
                 '--mount', f'type=bind,src={self.secrets},dst=/secrets,readonly',
                 '--mount', f'type=bind,src={state / "data"},dst=/data',
                 '--mount', f'type=bind,src={state / "runtime"},dst=/run/redis-config',
@@ -114,6 +165,23 @@ class Fixture:
                 '-e', 'REDIS_HEADLESS=redis-headless.fixture',
                 '-e', 'REDIS_BOOTSTRAP=' + ('yes' if bootstrap else 'no')]
 
+        if self.tls:
+            result += ['--mount', f'type=bind,src={self.tls_dir},dst=/tls,readonly',
+                       '-e', 'REDIS_TLS_ENABLED=yes', '-e', 'REDIS_TLS_CA_FILE=/tls/ca.crt',
+                       '-e', 'REDIS_TLS_CERT_FILE=/tls/tls.crt', '-e', 'REDIS_TLS_KEY_FILE=/tls/tls.key',
+                       '-e', 'REDIS_TLS_SERVER_NAME=redis.fixture']
+        result += ['-e', 'REDIS_HEALTH_REQUIRE_QUORUM=' + ('yes' if self.external_acl else 'no'),
+                   '-e', 'REDIS_HEALTH_MIN_REPLICAS=' + ('1' if self.external_acl else '0')]
+        result += ['-e', 'REDIS_USERNAME=' + self.operator, '-e', 'REDIS_PERSISTENCE_ENABLED=' + ('yes' if self.persistence else 'no')]
+        if self.external_acl:
+            result += ['-e', 'REDIS_EXTERNAL_ACL_FILE=/config/users.acl']
+            for role in ['replication', 'monitor', 'discovery']:
+                result += ['-e', 'REDIS_' + role.upper() + '_USERNAME=' + role,
+                           '-e', 'REDIS_' + role.upper() + '_PASSWORD_FILE=/secrets/' + role]
+            result += ['-e', 'REDIS_SENTINEL_METRICS_USERNAME=sentinel-metrics',
+                       '-e', 'REDIS_SENTINEL_METRICS_PASSWORD_FILE=/secrets/sentinel-metrics']
+        return result
+
     def start(self, index, bootstrap=False, suppress_dns=False, ip_override=None):
         name = self.data(index)
         if name not in self.names:
@@ -122,19 +190,27 @@ class Fixture:
         self.current_ip = ip
         run('docker', 'run', '-d', '--name', name, '--network', self.prefix, '--ip', ip,
             *(['--network-alias', self.member(index)] if not suppress_dns else []),
-            *self.common(index, bootstrap), '--entrypoint', '/bin/bash', self.image, '/shutdown/startup.sh', 'redis')
+            *self.common(index, bootstrap), '--entrypoint', '/bin/bash', self.image, '/health-bin/launcher.sh', 'redis')
         run('docker', 'run', '-d', '--name', self.sentinel(index), '--network', 'container:' + name,
-            *self.common(index, bootstrap), '--entrypoint', '/bin/bash', self.image, '/shutdown/startup.sh', 'sentinel')
+            *self.common(index, bootstrap), '--entrypoint', '/bin/bash', self.image, '/health-bin/launcher.sh', 'sentinel')
 
     def stop(self, indices):
         names = [name for index in indices for name in [self.sentinel(index), self.data(index)]]
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
             list(pool.map(lambda name: run('docker', 'rm', '-f', name, check=False), names))
+        # Synthetic fixture files are created by Redis UID 1001 under umask 077.
+        # Return host-user access after shutdown for corruption/replacement tests.
+        for index in indices:
+            run('docker', 'run', '--rm', '--user', '1001:1001', '--group-add', str(os.getgid()),
+                '--mount', f'type=bind,src={self.states[index] / "data"},dst=/data',
+                '--entrypoint', '/bin/bash', self.image, '-ec', 'find /data -mindepth 1 -uid 1001 -exec chmod a+rwX {} +')
         self.generation += 1
 
     def cli(self, index, *command, sentinel=False, check=True):
         result = run('docker', 'exec', '-e', 'REDISCLI_AUTH=fixture-system-password', self.sentinel(index) if sentinel else self.data(index),
-                     'redis-cli', '--raw', '-e', '-p', '26379' if sentinel else '6379', *command, check=check)
+                     'redis-cli', '--raw', '-e', '--user', self.operator,
+                     *(['--tls', '--cacert', '/tls/ca.crt', '--sni', 'redis.fixture'] if self.tls else []),
+                     '-p', '26379' if sentinel else '6379', *command, check=check)
         return result.stdout.strip() if check else result
 
     def healthy(self, indices=(0, 1, 2)):
@@ -160,7 +236,10 @@ class Fixture:
     def write_fixture(self):
         for index in range(25):
             self.cli(self.primary, 'SET', f'fixture:key:{index}', str(index))
-        assert self.cli(self.primary, 'WAITAOF', '1', '2', '5000') == '1\n2'
+        if self.persistence:
+            assert self.cli(self.primary, 'WAITAOF', '1', '2', '5000') == '1\n2'
+        else:
+            assert self.cli(self.primary, 'WAIT', '2', '5000') == '2'
 
     def retained(self, indices=(0, 1, 2)):
         for index in indices:
@@ -191,9 +270,10 @@ def migration(fixture):
     identities = fixture.ids()
     epochs = [fixture.cli(i, 'SENTINEL', 'MASTER', 'redis', sentinel=True).splitlines() for i in range(3)]
     epochs = [dict(zip(lines[::2], lines[1::2]))['config-epoch'] for lines in epochs]
-    run('docker', 'run', '--rm', '--network', fixture.prefix, '--user', '1001:1001', '--read-only',
+    run('docker', 'run', '--rm', '--network', fixture.prefix, '--user', '1001:1001', '--group-add', str(os.getgid()), '--read-only',
         '--mount', f'type=bind,src={fixture.secrets},dst=/secrets,readonly',
         '--mount', f'type=bind,src={ROOT / "charts/redis/files/prepare-hostnames.sh"},dst=/prepare.sh,readonly',
+        '--mount', f'type=bind,src={ROOT / "charts/redis/files"},dst=/shutdown,readonly',
         '-e', 'REDIS_PASSWORD_FILE=/secrets/redis-password', '-e', 'REDIS_SHUTDOWN_MASTER_SET=redis',
         '-e', 'REDIS_SHUTDOWN_REPLICAS=3', '-e', 'REDIS_NODE_PREFIX=redis-node', '-e', 'REDIS_HEADLESS=redis-headless.fixture',
         '--entrypoint', '/bin/bash', fixture.image, '/prepare.sh')
@@ -331,7 +411,8 @@ def main():
             fixture.start(replica)
             eventually(fixture.healthy)
             quarantined = fixture.states[replica] / 'data/recovery-quarantine/appendonlydir' / increment.name
-            assert hashlib.sha256(quarantined.read_bytes()).hexdigest() == checksum
+            assert run('docker', 'exec', fixture.data(replica), 'sha256sum',
+                       '/data/recovery-quarantine/appendonlydir/' + increment.name).stdout.split()[0] == checksum
             assert fixture.ids() == identities
             fixture.retained()
             fixture.record('corrupt AOF quarantined and rebuilt automatically', started)
@@ -341,7 +422,7 @@ def main():
             (fixture.states[replica] / 'data/appendonlydir/appendonly.aof.manifest').unlink()
             fixture.start(replica)
             eventually(fixture.healthy)
-            assert (fixture.states[replica] / 'data/recovery-quarantine/appendonlydir').is_dir()
+            run('docker', 'exec', fixture.data(replica), 'test', '-d', '/data/recovery-quarantine/appendonlydir')
             fixture.retained()
             fixture.record('missing AOF manifest rebuilt without electing an empty member', started)
 
@@ -403,7 +484,8 @@ def main():
     except Exception:
         for name in fixture.names:
             if '-service-' not in name:
-                print(name, run('docker', 'logs', '--tail', '35', name, check=False).stdout, flush=True)
+                logs = run('docker', 'logs', '--tail', '35', name, check=False)
+                print(name, logs.stdout, logs.stderr, flush=True)
         raise
     finally:
         fixture.close()

@@ -5,12 +5,44 @@ image: docker.io/library/redis:8.8.3-trixie@sha256:b2ba68d56e7e7ea88b64f4eaf307b
 auth:
   existingSecret: redis
   existingSecretPasswordKey: redis-password
+  # Empty role Secret/key values inherit the legacy system credential.
+  operator: {username: default, existingSecret: '', passwordKey: ''}
+  replication: {username: default, existingSecret: '', passwordKey: ''}
+  monitor: {username: default, existingSecret: '', passwordKey: ''}
+  discovery: {username: '', existingSecret: '', passwordKey: ''}
   acl:
+    existingSecret: ''
+    existingSecretKey: users.acl
     users: []
+tls:
+  enabled: false
+  existingSecret: ''
+  certKey: tls.crt
+  keyKey: tls.key
+  caKey: ca.crt
+  serverName: ''
+  # Password/ACL authentication is required; client-certificate auth unsupported.
+  authClients: false
+health:
+  # Verified public multi-architecture image built from its named source commit.
+  image: ghcr.io/zyno-io/redis-ha-health:6e36522e6292a1bce9cf10f8ff710a405ddf453d@sha256:1255f6dcaf1ca6eb559a832c79499ec40a16ec243577372306b6dfed9380ea1c
+  requireQuorum: false
+  minReplicas: 0
+  resources:
+    requests: {cpu: 10m, memory: 16Mi}
+    limits: {cpu: 100m, memory: 64Mi}
+networkPolicy:
+  enabled: true
 replica:
+  updateStrategy: RollingUpdate
+  priorityClassName: ''
+  maxmemory: '' # optional Redis memory bound, e.g. 256mb; noeviction remains enforced
+  minReplicasToWrite: 0
+  minReplicasMaxLag: 10
   replicaCount: 3
   podAnnotations: {}
   persistence:
+    enabled: true
     storageClass: ''
     size: 1Gi
   resources:
@@ -35,9 +67,16 @@ sentinel:
       memory: 128Mi
       ephemeral-storage: 50Mi
 metrics:
+  tlsSecret: '' # optional distinct client certificate when tls.authClients is true
+  username: ''
+  existingSecret: ''
+  passwordKey: ''
   image: docker.io/oliver006/redis_exporter:v1.89.0-alpine@sha256:d4e0a0ad55fa4f968eea4519b518b16dac887debd06c790a6be2f60940538d82
   podAnnotations: {}
   sentinel:
+    username: ''
+    existingSecret: ''
+    passwordKey: ''
     # Independent native exporters keep quorum observable during Redis recovery.
     enabled: false
     podAnnotations: {}

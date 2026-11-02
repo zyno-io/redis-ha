@@ -1,0 +1,56 @@
+name: Verify and publish health checker
+on:
+  pull_request:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: helper/go.mod
+          cache: false
+      - run: test -z "$(gofmt -l helper/*.go)"
+      - run: cd helper && go test -race ./...
+      - run: bash -n helper/launcher.sh
+      - run: python3 helper/release_gate_test.py
+      - run: mkdir -p .test-output/health-bin && cd helper && CGO_ENABLED=0 go build -trimpath -o ../.test-output/health-bin/redis-health .
+      - run: python3 helper/integration.py
+      - uses: docker/setup-buildx-action@v3
+      - run: docker buildx build --platform linux/amd64,linux/arm64 --file helper/Dockerfile helper
+  publish:
+    if: github.event_name == 'push' && github.repository == 'zyno-io/redis-ha'
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: helper
+          file: helper/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/zyno-io/redis-ha-health:${{ github.sha }}
+      - name: Record immutable image
+        run: echo 'ghcr.io/zyno-io/redis-ha-health:${{ github.sha }}@${{ steps.build.outputs.digest }}' > health-image.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: health-image
+          path: health-image.txt

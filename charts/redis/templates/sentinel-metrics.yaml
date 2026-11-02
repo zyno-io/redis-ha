@@ -40,14 +40,27 @@ spec:
         - name: metrics
           image: {{ $.Values.metrics.image | quote }}
           args:
-            - {{ printf "--redis.addr=redis://%s-node-%d.%s-headless.%s.svc.%s:26379" $.Release.Name $index $.Release.Name $.Release.Namespace $.Values.clusterDomain | quote }}
+            - {{ printf "--redis.addr=%s://%s-node-%d.%s-headless.%s.svc.%s:26379" (ternary "rediss" "redis" $.Values.tls.enabled) $.Release.Name $index $.Release.Name $.Release.Namespace $.Values.clusterDomain | quote }}
             - --include-config-metrics=false
+            {{- if $.Values.tls.enabled }}
+            - --tls-ca-cert-file=/redis-ca/ca.crt
+            - --tls-server-name={{ include "redis.tlsServerName" $ }}
+            {{- if $.Values.metrics.tlsSecret }}
+            - --tls-client-cert-file=/client-tls/tls.crt
+            - --tls-client-key-file=/client-tls/tls.key
+            {{- end }}
+          volumeMounts: {{ include "redis.metricsTlsMounts" $ | nindent 12 }}
+            {{- end }}
           env:
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ $.Values.auth.existingSecret }}
-                  key: {{ $.Values.auth.existingSecretPasswordKey }}
+                  name: {{ default (default $.Values.auth.existingSecret $.Values.metrics.existingSecret) $.Values.metrics.sentinel.existingSecret }}
+                  key: {{ default (default $.Values.auth.existingSecretPasswordKey $.Values.metrics.passwordKey) $.Values.metrics.sentinel.passwordKey }}
+            {{- if or $.Values.metrics.sentinel.username $.Values.metrics.username }}
+            - name: REDIS_USER
+              value: {{ default $.Values.metrics.username $.Values.metrics.sentinel.username | quote }}
+            {{- end }}
           ports:
             - name: metrics
               containerPort: 9121
@@ -59,7 +72,11 @@ spec:
               port: metrics
             periodSeconds: 5
             timeoutSeconds: 2
+      {{- if $.Values.tls.enabled }}
+      volumes: {{ include "redis.metricsTlsVolumes" $ | nindent 8 }}
+      {{- end }}
 {{- end }}
+{{- if .Values.networkPolicy.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -95,4 +112,5 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
+{{- end }}
 {{- end }}
