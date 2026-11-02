@@ -229,7 +229,8 @@ def main():
                           'externalAcl': args.external_acl, 'scenarios': len(fixture.results), 'evidence': str(fixture.work)}))
     except Exception:
         for name in fixture.names:
-            print(name, run('docker', 'logs', '--tail', '25', name, check=False).stdout, flush=True)
+            logs = run('docker', 'logs', '--tail', '25', name, check=False)
+            print(name, logs.stdout, logs.stderr, flush=True)
         raise
     finally:
         fixture.close()

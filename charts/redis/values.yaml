@@ -24,8 +24,8 @@ tls:
   # Password/ACL authentication is required; client-certificate auth unsupported.
   authClients: false
 health:
-  # In-flight tag; a published immutable digest is required before release.
-  image: ghcr.io/zyno-io/redis-ha-health:0.3.0
+  # Verified public multi-architecture image built from its named source commit.
+  image: ghcr.io/zyno-io/redis-ha-health:6e36522e6292a1bce9cf10f8ff710a405ddf453d@sha256:1255f6dcaf1ca6eb559a832c79499ec40a16ec243577372306b6dfed9380ea1c
   requireQuorum: false
   minReplicas: 0
   resources:

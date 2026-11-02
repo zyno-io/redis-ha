@@ -484,7 +484,8 @@ def main():
     except Exception:
         for name in fixture.names:
             if '-service-' not in name:
-                print(name, run('docker', 'logs', '--tail', '35', name, check=False).stdout, flush=True)
+                logs = run('docker', 'logs', '--tail', '35', name, check=False)
+                print(name, logs.stdout, logs.stderr, flush=True)
         raise
     finally:
         fixture.close()
