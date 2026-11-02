@@ -1,0 +1,12 @@
+{{- if and .Values.tls.enabled (not .Values.tls.existingSecret) }}{{ fail "tls.existingSecret is required when TLS is enabled" }}{{ end -}}
+{{- if and .Values.auth.acl.existingSecret (gt (len .Values.auth.acl.users) 0) }}{{ fail "External ACL authority and generated ACL users cannot be combined" }}{{ end -}}
+{{- if and .Values.auth.discovery.username (or (eq .Values.auth.discovery.username .Values.auth.operator.username) (eq .Values.auth.discovery.username .Values.auth.monitor.username)) }}{{ fail "Discovery identity must differ from operator and monitoring identities" }}{{ end -}}
+{{- if and .Values.auth.acl.existingSecret (eq .Values.auth.operator.username "default") }}{{ fail "External ACL deployments require a named operator identity" }}{{ end -}}
+{{- if .Values.tls.authClients }}{{ fail "TLS client certificate authentication is not supported; use TLS with separate ACL identities" }}{{ end -}}
+{{- if and .Values.metrics.sentinel.enabled .Values.auth.acl.existingSecret (not .Values.metrics.sentinel.username) }}{{ fail "External ACL deployments require a separate metrics.sentinel identity when Sentinel metrics are enabled" }}{{ end -}}
+{{- if and .Values.metrics.sentinel.enabled .Values.auth.acl.existingSecret (has .Values.metrics.sentinel.username (list "default" .Values.auth.operator.username .Values.auth.monitor.username .Values.auth.discovery.username)) }}{{ fail "Sentinel metrics identity must differ from default, operator, monitoring and discovery identities" }}{{ end -}}
+{{- range $role := list "replication" "monitor" }}
+{{- $settings := index $.Values.auth $role }}
+{{- if and (eq $settings.username $.Values.auth.operator.username) (or (ne (default $.Values.auth.existingSecret $settings.existingSecret) (default $.Values.auth.existingSecret $.Values.auth.operator.existingSecret)) (ne (default $.Values.auth.existingSecretPasswordKey $settings.passwordKey) (default $.Values.auth.existingSecretPasswordKey $.Values.auth.operator.passwordKey))) }}{{ fail "Shared role usernames must use the same credential reference" }}{{ end -}}
+{{- end }}
+{{- if and (not .Values.auth.acl.existingSecret) (or (ne .Values.auth.replication.username .Values.auth.operator.username) (ne .Values.auth.monitor.username .Values.auth.operator.username)) }}{{ fail "Separate replication/monitoring identities require an externally provisioned data ACL" }}{{ end -}}

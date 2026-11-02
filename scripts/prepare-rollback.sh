@@ -20,8 +20,8 @@ for ((index = 0; index < 3; index++)); do
     # Expand the password-file variable inside the Pod, never on the operator host.
     # shellcheck disable=SC2016
     redis_info=$("${redis_kube[@]}" exec "$redis_pod" -c redis -- /bin/bash -ec '
-        export REDISCLI_AUTH=$(< "$REDIS_PASSWORD_FILE")
-        exec timeout 3 redis-cli --raw -e INFO replication')
+        source /shutdown/transport.sh
+        cli -h 127.0.0.1 -p 6379 INFO replication')
     redis_role=$(awk -F: '$1 == "role" {sub(/\r$/, "", $2); print $2}' <<< "$redis_info")
     if [[ "$redis_role" == master ]]; then
         [[ -z "$redis_primary" ]]

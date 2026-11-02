@@ -18,6 +18,9 @@ jobs:
       - uses: mikefarah/yq@5a7e72a743649b1b3a47d1a1d8214f3453173c51
       - run: shellcheck charts/redis/files/*.sh scripts/*.sh
       - run: python3 tests/render.py
+      - name: Verify anonymously pullable immutable health artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: bash scripts/verify-health-image.sh
       - name: Package the verified release
         run: |
           tag="v$(yq -r .version charts/redis/Chart.yaml)"
@@ -33,13 +36,30 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [recovery, migration, maintenance]
+        scenario: [recovery, migration, maintenance, mode-plain-persistent, mode-plain-volatile, mode-tls-persistent, mode-tls-volatile]
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
         with:
           version: v3.18.4
       - uses: mikefarah/yq@5a7e72a743649b1b3a47d1a1d8214f3453173c51
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: helper/go.mod
+          cache: false
+      - name: Verify and build lifecycle/health client
+        run: |
+          (cd helper && go test -race ./...)
+          bash tests/build-helper.sh
+      - name: Transport and storage modes
+        if: startsWith(matrix.scenario, 'mode-')
+        run: |
+          case '${{ matrix.scenario }}' in
+            mode-plain-persistent) python3 tests/modes.py ;;
+            mode-plain-volatile) python3 tests/modes.py --volatile --external-acl ;;
+            mode-tls-persistent) python3 tests/modes.py --tls ;;
+            mode-tls-volatile) python3 tests/modes.py --tls --volatile --external-acl ;;
+          esac
       - name: Recovery
         if: matrix.scenario == 'recovery'
         run: python3 tests/recovery.py

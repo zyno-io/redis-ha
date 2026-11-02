@@ -7,17 +7,44 @@ data:
   redis.conf: |
     bind 0.0.0.0
     protected-mode yes
+    {{- if .Values.tls.enabled }}
+    port 0
+    tls-port 6379
+    tls-cert-file /tls/tls.crt
+    tls-key-file /tls/tls.key
+    tls-ca-cert-file /tls/ca.crt
+    tls-auth-clients {{ ternary "yes" "no" .Values.tls.authClients }}
+    tls-replication yes
+    {{- else }}
     port 6379
+    {{- end }}
     dir /data
-    appendonly yes
+    appendonly {{ ternary "yes" "no" .Values.replica.persistence.enabled }}
     appendfsync everysec
     save ""
     maxmemory-policy noeviction
+    {{- if .Values.replica.maxmemory }}
+    maxmemory {{ .Values.replica.maxmemory }}
+    {{- end }}
+    {{- if gt (int .Values.replica.minReplicasToWrite) 0 }}
+    min-replicas-to-write {{ .Values.replica.minReplicasToWrite }}
+    min-replicas-max-lag {{ .Values.replica.minReplicasMaxLag }}
+    {{- end }}
     # Redis 8.8 JSON and Search modules are part of the pinned official image.
     loadmodule /usr/local/lib/redis/modules/redisearch.so
     loadmodule /usr/local/lib/redis/modules/rejson.so
   sentinel.conf: |
+    {{- if .Values.tls.enabled }}
+    port 0
+    tls-port 26379
+    tls-cert-file /tls/tls.crt
+    tls-key-file /tls/tls.key
+    tls-ca-cert-file /tls/ca.crt
+    tls-auth-clients {{ ternary "yes" "no" .Values.tls.authClients }}
+    tls-replication yes
+    {{- else }}
     port 26379
+    {{- end }}
     bind 0.0.0.0
     protected-mode yes
     sentinel down-after-milliseconds {{ .Values.sentinel.masterSet }} {{ .Values.sentinel.downAfterMilliseconds }}

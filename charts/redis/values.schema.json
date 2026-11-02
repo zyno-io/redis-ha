@@ -78,6 +78,77 @@
                   }
                 }
               }
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "existingSecretKey": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_.-]+$"
+            }
+          }
+        },
+        "operator": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+$"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "passwordKey": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_.-]*$"
+            }
+          }
+        },
+        "replication": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+$"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "passwordKey": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_.-]*$"
+            }
+          }
+        },
+        "monitor": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+$"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "passwordKey": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_.-]*$"
+            }
+          }
+        },
+        "discovery": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]*$"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "passwordKey": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_.-]*$"
             }
           }
         }
@@ -88,6 +159,36 @@
       "properties": {
         "replicaCount": {
           "const": 3
+        },
+        "persistence": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
+        "updateStrategy": {
+          "enum": [
+            "RollingUpdate",
+            "OnDelete"
+          ]
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "minReplicasToWrite": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "minReplicasMaxLag": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxmemory": {
+          "type": "string",
+          "pattern": "^([1-9][0-9]*([kKmMgG][bB]?)?)?$"
         }
       }
     },
@@ -128,14 +229,97 @@
             },
             "resources": {
               "type": "object"
+            },
+            "username": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]*$"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "passwordKey": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_.-]*$"
             }
           }
+        },
+        "username": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]*$"
+        },
+        "existingSecret": {
+          "type": "string"
+        },
+        "passwordKey": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_.-]*$"
+        },
+        "tlsSecret": {
+          "type": "string"
         }
       }
     },
     "clusterDomain": {
       "type": "string",
       "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
+    },
+    "tls": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "existingSecret": {
+          "type": "string"
+        },
+        "certKey": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_.-]+$"
+        },
+        "keyKey": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_.-]+$"
+        },
+        "caKey": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_.-]+$"
+        },
+        "serverName": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9.:-]*$"
+        },
+        "authClients": {
+          "const": false
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "health": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": "string",
+          "pattern": "^ghcr\\.io/zyno-io/redis-ha-health:[a-zA-Z0-9_.-]+(@sha256:[a-f0-9]{64})?$"
+        },
+        "requireQuorum": {
+          "type": "boolean"
+        },
+        "minReplicas": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
     }
   }
 }

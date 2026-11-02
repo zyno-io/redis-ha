@@ -10,3 +10,5 @@ data:
 {{ .Files.Get "files/startup.sh" | indent 4 }}
   shutdown.sh: |
 {{ .Files.Get "files/shutdown.sh" | indent 4 }}
+  transport.sh: |
+{{ .Files.Get "files/transport.sh" | indent 4 }}

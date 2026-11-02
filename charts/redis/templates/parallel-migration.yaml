@@ -120,11 +120,18 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       initContainers:
+        {{- include "redis.healthInit" . | nindent 8 }}
         - name: prepare-hostnames
           image: {{ .Values.image | quote }}
           command: [/bin/bash, -ec]
           args:
             - |
+              # A pre-upgrade hook runs before the new release's regular
+              # ConfigMap exists. Embed its transport in the hook itself.
+              cat > /tmp/transport.sh <<'REDIS_TRANSPORT_SCRIPT'
+{{ .Files.Get "files/transport.sh" | indent 14 }}
+              REDIS_TRANSPORT_SCRIPT
+              export REDIS_LIFECYCLE_DIR=/tmp
 {{ .Files.Get "files/prepare-hostnames.sh" | indent 14 }}
           resources:
             requests:
@@ -136,6 +143,12 @@ spec:
           env: {{ include "redis.env" . | nindent 12 }}
           securityContext: {{ include "redis.security" . | nindent 12 }}
           volumeMounts:
+            {{- include "redis.roleMounts" . | nindent 12 }}
+            - name: health-bin
+              mountPath: /health-bin
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
             - name: credentials
               mountPath: /secrets
               readOnly: true
@@ -164,6 +177,9 @@ spec:
             - name: tmp
               mountPath: /tmp
       volumes:
+        - name: health-bin
+          emptyDir: {}
+        {{- include "redis.roleVolumes" . | nindent 8 }}
         - name: credentials
           secret:
             secretName: {{ .Values.auth.existingSecret }}

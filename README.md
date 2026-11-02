@@ -42,8 +42,8 @@ a competing promotion controller.
 ## Install
 
 Requirements are three schedulable nodes for the default hard anti-affinity,
-working cluster DNS, three persistent volumes, and a Secret supplied by the
-operator. The chart does not generate or rotate credentials. Each member runs
+working cluster DNS, three persistent volumes when persistence is enabled, and
+a Secret supplied by the operator. The chart does not generate or rotate credentials. Each member runs
 Redis, Sentinel, and an exporter as non-root processes with read-only root
 filesystems.
 
@@ -73,6 +73,52 @@ The Service's port 6379 selects all members and is **not a primary-only write
 endpoint**. Sentinel replies contain member hostnames; clients must resolve
 those names and rediscover the primary after failover.
 
+## Optional TLS and volatile storage
+
+`tls.enabled` defaults to `false`. When enabled, provide `tls.existingSecret`
+with the certificate, private key and CA keys selected by `certKey`, `keyKey`
+and `caKey`. Redis, replication and Sentinel use TLS-only network listeners;
+the authenticated private loading socket remains local plaintext IPC. Set
+`tls.serverName` to the certificate's shared service identity; its default is
+`<release>.<namespace>.svc.<clusterDomain>`. Native Redis peer connections verify
+the trusted certificate chain but do not implement DNS hostname checks in the
+pinned version; lifecycle and health clients must use the verified helper
+transport. TLS client-certificate authentication is not supported by this
+version; `tls.authClients` must remain false and distinct ACL identities are
+required for authentication.
+
+Changing `tls.enabled` on an existing pool is not an in-place rolling upgrade:
+the existing and replacement members cannot discover or replicate across
+different transport modes. The chart rejects that change; migrate deliberately
+to a new pool with the desired transport and coordinate its consumers.
+
+`replica.persistence.enabled` defaults to `true`. Setting it to `false` uses
+per-Pod `emptyDir`, disables AOF and scheduled RDB saves, and keeps empty members
+ineligible until synchronized. A complete loss of all volatile copies requires
+explicit initialization and cannot recover the lost application state. Changing
+storage mode on an existing StatefulSet is rejected; create a deliberately
+planned replacement pool and preserve any old PVCs.
+
+Existing default-user authentication is unchanged. `auth.operator`,
+`auth.replication`, `auth.monitor` and `auth.discovery` support distinct usernames
+and existing Secret/key references. Separate replication/monitoring identities
+require the externally provisioned data ACL; generated ACLs retain one operator
+system identity. Empty Secret/key fields inherit
+`auth.existingSecret`/`existingSecretPasswordKey`. Discovery is disabled unless
+its username is set. `auth.acl.existingSecret` supplies an external data ACL file
+and requires a named operator; do not also configure generated ACL users.
+`metrics.username`, `existingSecret` and `passwordKey` select the exporter's
+separate identity. Independent Sentinel exporters can select their own
+`metrics.sentinel.username`, `existingSecret` and `passwordKey`; external ACL
+mode requires that separate identity when enabled. The chart never creates
+passwords.
+
+`replica.maxmemory` optionally bounds Redis allocations with `noeviction`;
+`minReplicasToWrite` and `minReplicasMaxLag` configure write admission.
+`replica.updateStrategy` defaults to `RollingUpdate` and also supports
+`OnDelete`. Disable `networkPolicy.enabled` when the consumer supplies a more
+restrictive complete policy boundary; Kubernetes allow policies are additive.
+
 ## Recovery and limits
 
 Existing member FQDNs provide stable identities across changed Pod IPs.
@@ -92,9 +138,9 @@ The chart retains Redis asynchronous replication and `appendfsync everysec`
 durability limits. It cannot manufacture lost data, recover permanent loss of
 all voting authority, or fence an already-running isolated primary beyond
 native Sentinel guarantees. Minority **startup** stays read-only. Redis and
-Sentinel transport is authenticated plaintext; network access must be restricted
-to trusted clients and members. TLS and cross-site failover are outside this
-chart's supported contract.
+Sentinel transport is authenticated plaintext by default, with optional TLS.
+Network access must be restricted to trusted clients and members. Cross-site
+failover is outside this chart's supported contract.
 
 The fixed topology is three voters with quorum two. Candidate timeout values
 and readiness behavior are part of the tested contract; `downAfterMilliseconds`
@@ -166,7 +212,12 @@ synthetic. No private repository, cluster context, or real Secret is needed.
 ```bash
 shellcheck charts/redis/files/*.sh scripts/*.sh
 python3 tests/render.py
+bash tests/build-helper.sh
 python3 tests/recovery.py
+python3 tests/modes.py
+python3 tests/modes.py --volatile --external-acl
+python3 tests/modes.py --tls
+python3 tests/modes.py --tls --volatile --external-acl
 python3 tests/recovery.py --migration-only
 python3 tests/maintenance.py --official-only
 python3 tests/kubernetes.py
@@ -184,6 +235,17 @@ kubeconfig. It exercises real StatefulSet orphan/adoption, Helm downgrade and
 re-upgrade, a blocked lower-ordinal volume mount with higher members recovering,
 whole-cluster DNS loss/restoration, native quorum telemetry, and the actual
 discovery function's handling of a newer observed election epoch.
+
+Consumer repositories can run `tests/modes.py --consumer-hook /path/to/executable`
+with the desired mode flags. The executable receives a private fixture JSON path
+containing schema version, disposable Docker network/member DNS, TLS CA file and
+synthetic credential file references, current primary and per-member addresses.
+It runs at `phase=initial` and again at `phase=post-promotion` after unplanned
+primary replacement and rejoin; a nonzero exit fails the test. Optional
+`--consumer-acl /path/to/synthetic.acl` adds consumer-supplied identities before
+startup and preserves that ACL through replacements (requires `--external-acl`). Product-specific images and assertions stay in
+the consuming repository. The ordinary release matrix always runs all shared
+mode checks without depending on an external hook.
 
 ## Release
 
