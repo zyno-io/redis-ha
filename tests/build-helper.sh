@@ -13,3 +13,6 @@ else
         --workdir /src "$image" go build -trimpath -o /out/redis-health .
 fi
 chmod 0555 "$root/.test-output/health-bin/redis-health"
+# Use the same installer as the Kubernetes init container; fixtures need both
+# the binary and the embedded launcher in a fresh checkout.
+"$root/.test-output/health-bin/redis-health" install "$root/.test-output/health-bin"
